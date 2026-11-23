@@ -224,6 +224,7 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const disableHmr = process.env.DISABLE_HMR === 'true' || Boolean(process.env.APP_URL);
     const vite = await createViteServer({
+      root: path.resolve(process.cwd(), 'frontend'),
       server: {
         middlewareMode: true,
         hmr: disableHmr ? false : { server: httpServer },
