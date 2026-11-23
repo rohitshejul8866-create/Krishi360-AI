@@ -2,7 +2,7 @@ import type { AppConfig } from '../config/env';
 import type { Container } from '../container';
 import { getContainer } from '../container';
 import { withHttp } from '../middleware/withHttp';
-import { farmCreateSchema, idParam, paginationQuery, readingsQuerySchema, soilReadingSchema } from '../validators';
+import { farmCreateSchema, farmUpdateSchema, idParam, paginationQuery, readingsQuerySchema, soilReadingSchema } from '../validators';
 import type { Route } from './router';
 import { lazyRouter } from './router';
 
@@ -31,6 +31,17 @@ export function buildJalSenseRoutes(config: AppConfig, container: Container): Ro
       handler: withHttp({ auth: 'required', params: idParam }, config, async (ctx) => ({
         data: await svc.getFarm(ctx.user!, ctx.params.id),
       })),
+    },
+    {
+      method: 'PUT',
+      resource: '/farms/{id}',
+      handler: withHttp(
+        { auth: 'required', roles: ['farmer', 'admin'], params: idParam, body: farmUpdateSchema },
+        config,
+        async (ctx) => ({
+          data: await svc.updateFarm(ctx.user!, ctx.params.id, ctx.body, ctx.logger),
+        }),
+      ),
     },
     {
       method: 'POST',

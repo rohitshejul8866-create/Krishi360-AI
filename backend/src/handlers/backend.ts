@@ -4,11 +4,13 @@ import { getContainer } from '../container';
 import { withHttp } from '../middleware/withHttp';
 import {
   ensureDynamoTable,
+  exportSanitizedDatabase,
   getBackendStatus,
   listBackendRecords,
+  runDatabaseHealthCheck,
   seedActiveDatabase,
 } from '../services/awsDatabaseService';
-import { backendRecordsQuerySchema } from '../validators';
+import { backendRecordsQuerySchema, backendSeedBodySchema } from '../validators';
 import type { Route } from './router';
 import { lazyRouter } from './router';
 
@@ -39,6 +41,20 @@ export function buildBackendRoutes(config: AppConfig, container: Container): Rou
     },
     {
       method: 'POST',
+      resource: '/backend/health-check',
+      handler: withHttp({ auth: 'required', roles: ['admin'] }, config, async (ctx) => ({
+        data: await runDatabaseHealthCheck(config, container, ctx.user!, ctx.logger),
+      })),
+    },
+    {
+      method: 'GET',
+      resource: '/backend/export',
+      handler: withHttp({ auth: 'required', roles: ['admin'] }, config, async (ctx) => ({
+        data: await exportSanitizedDatabase(config, container, ctx.user!, ctx.logger),
+      })),
+    },
+    {
+      method: 'POST',
       resource: '/backend/ensure-table',
       handler: withHttp({ auth: 'required', roles: ['admin'] }, config, async (ctx) => {
         const dynamo = await ensureDynamoTable(config);
@@ -52,9 +68,15 @@ export function buildBackendRoutes(config: AppConfig, container: Container): Rou
     {
       method: 'POST',
       resource: '/backend/seed',
-      handler: withHttp({ auth: 'required', roles: ['admin'] }, config, async (ctx) => ({
-        data: await seedActiveDatabase(config, container, ctx.user!, ctx.logger),
-      })),
+      handler: withHttp(
+        { auth: 'required', roles: ['admin'], body: backendSeedBodySchema },
+        config,
+        async (ctx) => ({
+          data: await seedActiveDatabase(config, container, ctx.user!, ctx.logger, {
+            mode: ctx.body?.mode ?? 'missing',
+          }),
+        }),
+      ),
     },
   ];
 }

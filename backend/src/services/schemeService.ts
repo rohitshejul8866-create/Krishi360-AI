@@ -1,8 +1,26 @@
+import type { AuthUser } from '../middleware/auth';
 import type { EligibilityRule, FarmerProfile, Scheme } from '../models/scheme';
 import { ELIGIBILITY_DISCLAIMER, type CriterionResult, type EligibilityCheckResult } from '../models/scheme';
 import type { SchemeFilters, SchemeRepository } from '../repositories/types';
 import { NotFoundError } from '../utils/errors';
+import { makeId, nowIso } from '../utils/ids';
+import type { Logger } from '../utils/logger';
 import type { Page, PageRequest } from '../utils/pagination';
+import type { AuditService } from './auditService';
+
+export interface SchemeCreateInput {
+  id?: string;
+  name: string;
+  category: string;
+  state: string;
+  summary: string;
+  eligibility: string[];
+  documents: string[];
+  sourceLabel: string;
+  sourceUrl: string;
+  tags: string[];
+  dataType: 'sample' | 'verified';
+}
 
 function evaluateRule(rule: EligibilityRule, profile: FarmerProfile): CriterionResult {
   const actual = profile[rule.field];
@@ -31,7 +49,10 @@ function evaluateRule(rule: EligibilityRule, profile: FarmerProfile): CriterionR
 }
 
 export class SchemeService {
-  constructor(private repo: SchemeRepository) {}
+  constructor(
+    private repo: SchemeRepository,
+    private audit?: AuditService,
+  ) {}
 
   async list(filters: SchemeFilters, page: PageRequest): Promise<{ page: Page<Scheme>; simulated: boolean }> {
     const result = await this.repo.list(filters, page);
@@ -43,6 +64,43 @@ export class SchemeService {
     const scheme = await this.repo.get(id);
     if (!scheme) throw new NotFoundError('Scheme not found.');
     return { scheme, simulated: scheme.dataType === 'sample' };
+  }
+
+  async upsert(actor: AuthUser, input: SchemeCreateInput, logger: Logger): Promise<Scheme> {
+    const ts = nowIso();
+    const existing = input.id ? await this.repo.get(input.id) : null;
+    const scheme: Scheme = {
+      id: existing?.id ?? input.id ?? makeId('SCHEME'),
+      name: input.name,
+      category: input.category,
+      state: input.state,
+      summary: input.summary,
+      eligibility: input.eligibility,
+      eligibilityRules: existing?.eligibilityRules ?? [
+        {
+          field: 'state',
+          op: 'eq',
+          value: input.state,
+          description: `Applicable in ${input.state}.`,
+        },
+      ],
+      documents: input.documents,
+      sourceLabel: input.sourceLabel,
+      sourceUrl: input.sourceUrl,
+      tags: input.tags,
+      dataType: input.dataType,
+      lastUpdatedAt: ts,
+      createdAt: existing?.createdAt ?? ts,
+      version: (existing?.version ?? 0) + 1,
+    };
+    await this.repo.put(scheme);
+    if (this.audit) {
+      await this.audit.record(logger, actor, 'scheme.saved', scheme.id, {
+        name: scheme.name,
+        category: scheme.category,
+      });
+    }
+    return scheme;
   }
 
   /**

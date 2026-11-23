@@ -279,6 +279,36 @@ export class AuthService {
     return found ? toPublicUser(found) : null;
   }
 
+  async updateOwnProfile(
+    actor: AuthUser,
+    patch: {
+      name?: string;
+      location?: string;
+      phone?: string;
+      specialisation?: string;
+      organisation?: string;
+    },
+    logger: Logger,
+  ): Promise<PublicUserAccount> {
+    const existing = await this.users.get(actor.id);
+    if (!existing) throw new NotFoundError('User profile not found.');
+    const nextName = patch.name?.trim() || existing.name;
+    const updated: UserAccount = {
+      ...existing,
+      name: nextName,
+      avatar: initialsFor(nextName),
+      ...(patch.location !== undefined ? { location: patch.location.trim() } : {}),
+      ...(patch.phone !== undefined ? { phone: patch.phone.trim() } : {}),
+      ...(patch.specialisation !== undefined ? { specialisation: patch.specialisation.trim() } : {}),
+      ...(patch.organisation !== undefined ? { organisation: patch.organisation.trim() } : {}),
+      updatedAt: nowIso(),
+      version: existing.version + 1,
+    };
+    await this.users.update(updated, existing.version);
+    await this.audit.record(logger, actor, 'auth.profile_updated', actor.id);
+    return toPublicUser(updated);
+  }
+
   async listUsers(page: PageRequest, role?: Role): Promise<Page<PublicUserAccount>> {
     const res = await this.users.list(page, role);
     return {

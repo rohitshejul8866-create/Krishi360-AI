@@ -7,8 +7,10 @@ import {
 import type { AppConfig } from '../config/env';
 import type { Container, Repositories } from '../container';
 import type { AuthUser } from '../middleware/auth';
+import { toPublicUser } from '../models/user';
 import { getBaseDynamoClient } from '../repositories/dynamo/client';
-import { seedDemoPortalData } from '../seed/demoPortalSeed';
+import { inspectSqliteDatabase, type SqliteInspection } from '../repositories/sqlite/client';
+import { seedDemoPortalData, type SeedOptions } from '../seed/demoPortalSeed';
 import { ServiceUnavailableError, ValidationError } from '../utils/errors';
 import type { Logger } from '../utils/logger';
 
@@ -20,7 +22,9 @@ export type BackendEntityName =
   | 'schemes'
   | 'storageBatches'
   | 'farms'
-  | 'auditLogs';
+  | 'auditLogs'
+  | 'users'
+  | 'notifications';
 
 export interface DynamoTableInspection {
   reachable: boolean;
@@ -32,7 +36,7 @@ export interface DynamoTableInspection {
 }
 
 export interface BackendEndpointInfo {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH';
   path: string;
   module: string;
   auth: 'Public' | 'Authenticated' | 'Expert / Admin' | 'Admin only';
@@ -41,7 +45,7 @@ export interface BackendEndpointInfo {
 
 export interface BackendStatusSnapshot {
   service: string;
-  dataBackend: 'memory' | 'dynamodb';
+  dataBackend: AppConfig['dataBackend'];
   awsRegion: string;
   tableName: string;
   customEndpointConfigured: boolean;
@@ -50,6 +54,7 @@ export interface BackendStatusSnapshot {
   aiProvider: AppConfig['aiProvider'];
   authMode: AppConfig['authMode'];
   dynamo: DynamoTableInspection;
+  sqlite?: SqliteInspection;
   counts: Record<BackendEntityName, number>;
   singleTableSchema: Array<{
     entity: string;
@@ -60,32 +65,45 @@ export interface BackendStatusSnapshot {
   }>;
   endpoints: BackendEndpointInfo[];
   checkedAt: string;
+  seedResult?: { inserted: number; skipped: number };
 }
 
 const SINGLE_TABLE_SCHEMA: BackendStatusSnapshot['singleTableSchema'] = [
   { entity: 'UserAccount', pkPattern: 'USER#<id>', skPattern: 'META', gsi1: 'EMAIL#<email>', gsi2: 'ROLE#<role>' },
+  { entity: 'UserWorkspace', pkPattern: 'WORKSPACE#<userId>', skPattern: 'META', gsi1: '—', gsi2: '—' },
+  { entity: 'Notification', pkPattern: 'NOTIF#<id>', skPattern: 'META', gsi1: 'NOTIF_FEED', gsi2: '<createdAt>' },
+  { entity: 'PlatformSettings', pkPattern: 'SETTINGS#GLOBAL', skPattern: 'META', gsi1: '—', gsi2: '—' },
   { entity: 'CropCase', pkPattern: 'CASE#<id>', skPattern: 'META', gsi1: 'FARMER#<farmerId>', gsi2: 'EXPERTQUEUE' },
   { entity: 'MandiPrice', pkPattern: 'PRICE#<id>', skPattern: 'META', gsi1: 'CROP#<crop>', gsi2: 'STATE#<state>' },
   { entity: 'Scheme', pkPattern: 'SCHEME#<id>', skPattern: 'META', gsi1: 'CATEGORY#<cat>', gsi2: '—' },
   { entity: 'Farm & Plots', pkPattern: 'FARM#<id>', skPattern: 'META', gsi1: 'FARMER#<farmerId>', gsi2: '—' },
   { entity: 'SoilReading', pkPattern: 'FARM#<farmId>', skPattern: 'READING#<ts>#<id>', gsi1: '—', gsi2: '—' },
   { entity: 'StorageBatch', pkPattern: 'BATCH#<id>', skPattern: 'META', gsi1: 'FARMER#<ownerId>', gsi2: '—' },
-  { entity: 'Inspection / Alert', pkPattern: 'BATCH#<batchId>', skPattern: 'INSPECTION# | ALERT#', gsi1: '—', gsi2: '—' },
+  { entity: 'StorageReading / Alert', pkPattern: 'BATCH#<batchId>', skPattern: 'READING# | ALERT# | INSPECTION#', gsi1: '—', gsi2: '—' },
   { entity: 'AuditEntry', pkPattern: 'AUDIT#<YYYY-MM-DD>', skPattern: '<ts>#<id>', gsi1: 'ACTOR#<actorId>', gsi2: '—' },
 ];
 
 const API_ENDPOINTS: BackendEndpointInfo[] = [
   { method: 'GET', path: '/api/health', module: 'Platform', auth: 'Public', description: 'Service heartbeat & active backend mode' },
   { method: 'GET', path: '/api/me', module: 'Auth', auth: 'Authenticated', description: 'Active caller identity & role claims' },
-  { method: 'GET', path: '/api/backend/status', module: 'AWS Backend', auth: 'Admin only', description: 'DynamoDB table health, counts & runtime readiness' },
-  { method: 'GET', path: '/api/backend/records?entity=cropCases', module: 'AWS Backend', auth: 'Admin only', description: 'Inspect live records from active DB repository' },
-  { method: 'POST', path: '/api/backend/ensure-table', module: 'AWS Backend', auth: 'Admin only', description: 'Verify or provision DynamoDB single-table & GSIs' },
-  { method: 'POST', path: '/api/backend/seed', module: 'AWS Backend', auth: 'Admin only', description: 'Seed demo dataset into active repository' },
+  { method: 'PATCH', path: '/api/me', module: 'Auth', auth: 'Authenticated', description: 'Persist caller profile updates to database' },
+  { method: 'GET', path: '/api/workspace', module: 'Workspace', auth: 'Authenticated', description: 'Hydrate saved schemes, alerts, schedules, notifications & settings' },
+  { method: 'PUT', path: '/api/workspace', module: 'Workspace', auth: 'Authenticated', description: 'Persist saved schemes, applications, mandi alerts & reminders' },
+  { method: 'GET', path: '/api/backend/status', module: 'Database', auth: 'Admin only', description: 'SQLite WAL / DynamoDB table health, counts & runtime readiness' },
+  { method: 'GET', path: '/api/backend/records?entity=cropCases', module: 'Database', auth: 'Admin only', description: 'Inspect live records across all 8 database entities' },
+  { method: 'POST', path: '/api/backend/health-check', module: 'Database', auth: 'Admin only', description: 'Run live integrity check (SQLite PRAGMA / DynamoDB DescribeTable)' },
+  { method: 'GET', path: '/api/backend/export', module: 'Database', auth: 'Admin only', description: 'Download sanitized JSON database snapshot' },
+  { method: 'POST', path: '/api/backend/ensure-table', module: 'Database', auth: 'Admin only', description: 'Verify or provision DynamoDB single-table & GSIs' },
+  { method: 'POST', path: '/api/backend/seed', module: 'Database', auth: 'Admin only', description: 'Seed missing or reset demo dataset in active database' },
   { method: 'GET', path: '/api/crop-cases?limit=25', module: 'CropDoctor AI', auth: 'Authenticated', description: 'Role-scoped crop diagnosis cases' },
   { method: 'GET', path: '/api/mandi/prices?limit=25', module: 'MandiSmart', auth: 'Authenticated', description: 'Query agricultural mandi market prices' },
   { method: 'GET', path: '/api/farms?limit=20', module: 'JalSense', auth: 'Authenticated', description: 'Fetch farms & plot irrigation state' },
+  { method: 'PUT', path: '/api/farms/{id}', module: 'JalSense', auth: 'Authenticated', description: 'Persist farm plot edits & irrigation metadata' },
   { method: 'GET', path: '/api/storage-batches?limit=25', module: 'GrainGuard', auth: 'Authenticated', description: 'Storage batch telemetry & threshold status' },
+  { method: 'GET', path: '/api/storage-batches/{id}/readings', module: 'GrainGuard', auth: 'Authenticated', description: 'Fetch persisted temperature & humidity readings' },
   { method: 'GET', path: '/api/schemes?limit=25', module: 'SchemeSaathi', auth: 'Authenticated', description: 'Government schemes & eligibility catalog' },
+  { method: 'POST', path: '/api/schemes', module: 'SchemeSaathi', auth: 'Admin only', description: 'Create or update government scheme entry' },
+  { method: 'PUT', path: '/api/admin/settings', module: 'Governance', auth: 'Admin only', description: 'Persist platform configuration & SLA thresholds' },
   { method: 'GET', path: '/api/audit-logs?limit=25', module: 'Governance', auth: 'Admin only', description: 'Immutable mutation & review audit trail' },
 ];
 
@@ -114,7 +132,9 @@ export async function inspectDynamoTable(config: AppConfig): Promise<DynamoTable
       message:
         config.dataBackend === 'dynamodb'
           ? 'DATA_BACKEND=dynamodb is enabled, but AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not set.'
-          : 'Running on local in-memory store. Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and DATA_BACKEND=dynamodb in Secrets to connect AWS DynamoDB.',
+          : config.dataBackend === 'sqlite'
+            ? 'Running on persistent local SQLite single-table database (WAL mode). Set AWS credentials and DATA_BACKEND=dynamodb to switch to AWS DynamoDB.'
+            : 'Running on local in-memory store. Set DATA_BACKEND=sqlite for local persistence or AWS credentials + DATA_BACKEND=dynamodb for AWS.',
     };
   }
 
@@ -226,13 +246,15 @@ export async function ensureDynamoTable(config: AppConfig): Promise<DynamoTableI
 
 async function countAllEntities(repos: Repositories): Promise<Record<BackendEntityName, number>> {
   const page = { limit: 100 };
-  const [cases, mandi, schemes, storage, farms, audit] = await Promise.all([
+  const [cases, mandi, schemes, storage, farms, audit, users, notifications] = await Promise.all([
     repos.cases.listAll(page).catch(() => ({ items: [] })),
     repos.mandi.query({}, page).catch(() => ({ items: [] })),
     repos.schemes.list({}, page).catch(() => ({ items: [] })),
     repos.storage.listAll(page).catch(() => ({ items: [] })),
     repos.farms.listAll(page).catch(() => ({ items: [] })),
     repos.audit.list(page).catch(() => ({ items: [] })),
+    repos.users.list(page).catch(() => ({ items: [] })),
+    repos.workspace.listNotifications(page).catch(() => ({ items: [] })),
   ]);
   return {
     cropCases: cases.items.length,
@@ -241,14 +263,21 @@ async function countAllEntities(repos: Repositories): Promise<Record<BackendEnti
     storageBatches: storage.items.length,
     farms: farms.items.length,
     auditLogs: audit.items.length,
+    users: users.items.length,
+    notifications: notifications.items.length,
   };
 }
 
-export async function getBackendStatus(config: AppConfig, container: Container): Promise<BackendStatusSnapshot> {
+export async function getBackendStatus(
+  config: AppConfig,
+  container: Container,
+  runIntegrity = false,
+): Promise<BackendStatusSnapshot> {
   const [dynamo, counts] = await Promise.all([
     inspectDynamoTable(config),
     countAllEntities(container.repos),
   ]);
+  const sqlite = config.dataBackend === 'sqlite' ? inspectSqliteDatabase(config, runIntegrity) : undefined;
 
   return {
     service: 'krishi360-ai-backend',
@@ -261,6 +290,7 @@ export async function getBackendStatus(config: AppConfig, container: Container):
     aiProvider: config.aiProvider,
     authMode: config.authMode,
     dynamo,
+    ...(sqlite ? { sqlite } : {}),
     counts,
     singleTableSchema: SINGLE_TABLE_SCHEMA,
     endpoints: API_ENDPOINTS,
@@ -273,16 +303,76 @@ export async function seedActiveDatabase(
   container: Container,
   actor: AuthUser,
   logger: Logger,
+  options: SeedOptions = {},
 ): Promise<BackendStatusSnapshot> {
   if (config.dataBackend === 'dynamodb') {
     await ensureDynamoTable(config);
   }
-  await seedDemoPortalData(container.repos);
+  const seedResult = await seedDemoPortalData(container.repos, options);
   await container.audit.record(logger, actor, 'backend.database_seeded', config.tableName, {
     dataBackend: config.dataBackend,
-    awsRegion: config.awsRegion,
+    mode: options.mode ?? 'missing',
+    inserted: seedResult.inserted,
+    skipped: seedResult.skipped,
   });
-  return getBackendStatus(config, container);
+  const status = await getBackendStatus(config, container);
+  return { ...status, seedResult };
+}
+
+export async function runDatabaseHealthCheck(
+  config: AppConfig,
+  container: Container,
+  actor: AuthUser,
+  logger: Logger,
+): Promise<BackendStatusSnapshot> {
+  const status = await getBackendStatus(config, container, true);
+  await container.audit.record(logger, actor, 'backend.health_checked', config.tableName, {
+    dataBackend: config.dataBackend,
+    sqliteIntegrityOk: status.sqlite?.integrityOk,
+    dynamoStatus: status.dynamo.tableStatus,
+  });
+  return status;
+}
+
+export async function exportSanitizedDatabase(
+  config: AppConfig,
+  container: Container,
+  actor: AuthUser,
+  logger: Logger,
+) {
+  const page = { limit: 100 };
+  const [cases, mandi, schemes, storage, farms, audit, users, notifications, settings] = await Promise.all([
+    container.repos.cases.listAll(page),
+    container.repos.mandi.query({}, page),
+    container.repos.schemes.list({}, page),
+    container.repos.storage.listAll(page),
+    container.repos.farms.listAll(page),
+    container.repos.audit.list(page),
+    container.repos.users.list(page),
+    container.repos.workspace.listNotifications(page),
+    container.repos.workspace.getPlatformSettings(),
+  ]);
+
+  await container.audit.record(logger, actor, 'backend.database_exported', config.tableName, {
+    dataBackend: config.dataBackend,
+  });
+
+  return {
+    exportedAt: new Date().toISOString(),
+    dataBackend: config.dataBackend,
+    tableName: config.tableName,
+    collections: {
+      users: users.items.map(toPublicUser),
+      cropCases: cases.items,
+      mandiPrices: mandi.items,
+      schemes: schemes.items,
+      storageBatches: storage.items,
+      farms: farms.items,
+      notifications: notifications.items,
+      auditLogs: audit.items,
+      platformSettings: settings,
+    },
+  };
 }
 
 export async function listBackendRecords(
@@ -305,5 +395,11 @@ export async function listBackendRecords(
       return repos.farms.listAll(page);
     case 'auditLogs':
       return repos.audit.list(page);
+    case 'users': {
+      const res = await repos.users.list(page);
+      return { ...res, items: res.items.map(toPublicUser) };
+    }
+    case 'notifications':
+      return repos.workspace.listNotifications(page);
   }
 }

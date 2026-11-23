@@ -6,6 +6,9 @@ export interface Plot {
   areaHa: number;
   crop: string;
   growthStage: string;
+  soilMoisture?: number;
+  lastIrrigated?: string;
+  status?: 'healthy' | 'watch' | 'attention';
 }
 
 export interface Farm {

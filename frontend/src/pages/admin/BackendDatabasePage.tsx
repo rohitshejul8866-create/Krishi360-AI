@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  Activity,
   CheckCircle2,
   Cloud,
   Database,
+  Download,
+  HardDrive,
   Layers,
   Play,
   RefreshCw,
@@ -33,7 +36,7 @@ import { useApp } from '../../services/store'
 import { formatDateTime } from '../../services/utils'
 
 const PAGE_TABS: TabItem[] = [
-  { id: 'overview', label: 'AWS DynamoDB & Env', icon: <Database size={15} /> },
+  { id: 'overview', label: 'Database & Schema', icon: <Database size={15} /> },
   { id: 'records', label: 'Database Records', icon: <Table2 size={15} /> },
   { id: 'endpoints', label: 'Backend APIs', icon: <Terminal size={15} /> },
 ]
@@ -44,6 +47,8 @@ const ENTITY_OPTIONS: { id: BackendEntityName; label: string }[] = [
   { id: 'schemes', label: 'Schemes' },
   { id: 'storageBatches', label: 'Storage batches' },
   { id: 'farms', label: 'Farms' },
+  { id: 'users', label: 'User accounts' },
+  { id: 'notifications', label: 'Notifications' },
   { id: 'auditLogs', label: 'Audit logs' },
 ]
 
@@ -85,6 +90,20 @@ function summarizeRecord(entity: BackendEntityName, row: Record<string, unknown>
         meta: `${Array.isArray(row.plots) ? row.plots.length : 0} plots`,
         updated: String(row.updatedAt ?? row.createdAt ?? ''),
       }
+    case 'users':
+      return {
+        primary: String(row.name ?? 'User'),
+        secondary: `${row.email ?? ''} · ${row.role ?? ''}`,
+        meta: String(row.status ?? 'active'),
+        updated: String(row.updatedAt ?? row.joinedAt ?? ''),
+      }
+    case 'notifications':
+      return {
+        primary: String(row.title ?? 'Notification'),
+        secondary: `Audience: ${row.audience ?? 'all'}`,
+        meta: String(row.severity ?? 'info'),
+        updated: String(row.createdAt ?? ''),
+      }
     case 'auditLogs':
       return {
         primary: String(row.action ?? 'Action'),
@@ -103,7 +122,7 @@ export function BackendDatabasePage() {
   const [activeTab, setActiveTab] = useState<'overview' | 'records' | 'endpoints'>('overview')
   const [status, setStatus] = useState<BackendStatusSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
-  const [busyAction, setBusyAction] = useState<'refresh' | 'table' | 'seed' | 'sync' | null>(null)
+  const [busyAction, setBusyAction] = useState<'refresh' | 'table' | 'seed' | 'sync' | 'health' | 'export' | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
 
   const [selectedEntity, setSelectedEntity] = useState<BackendEntityName>('cropCases')
@@ -136,7 +155,7 @@ export function BackendDatabasePage() {
   const loadRecords = useCallback(async (entity: BackendEntityName) => {
     setRecordsLoading(true)
     try {
-      const res = await backendService.listRecords(entity, 15)
+      const res = await backendService.listRecords(entity, 25)
       setRecords(res.items)
     } catch (err) {
       setRecords([])
@@ -170,7 +189,57 @@ export function BackendDatabasePage() {
     await loadStatus(true)
     if (activeTab === 'records') await loadRecords(selectedEntity)
     setBusyAction(null)
-    show('Backend status refreshed', 'Live counts and AWS DynamoDB metadata updated.')
+    show('Database status refreshed', 'Live collection counts and storage diagnostics updated.')
+  }
+
+  const handleHealthCheck = async () => {
+    setBusyAction('health')
+    try {
+      const next = await backendService.healthCheck()
+      setStatus(next)
+      if (next.sqlite) {
+        show(
+          next.sqlite.integrityOk ? 'SQLite integrity OK' : 'SQLite check warning',
+          next.sqlite.message,
+          next.sqlite.integrityOk ? 'success' : 'warning',
+        )
+      } else {
+        show('Database health checked', next.dynamo.message, 'success')
+      }
+    } catch (err) {
+      show(
+        'Integrity check failed',
+        err instanceof Error ? err.message : 'Unable to complete database health check.',
+        'warning',
+      )
+    } finally {
+      setBusyAction(null)
+    }
+  }
+
+  const handleExportSnapshot = async () => {
+    setBusyAction('export')
+    try {
+      const snapshot = await backendService.exportSnapshot()
+      const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `krishi360-db-snapshot-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+      show('Database exported', 'Sanitized JSON snapshot downloaded (sensitive credentials excluded).', 'success')
+    } catch (err) {
+      show(
+        'Export failed',
+        err instanceof Error ? err.message : 'Could not export database snapshot.',
+        'critical',
+      )
+    } finally {
+      setBusyAction(null)
+    }
   }
 
   const handleEnsureTable = async () => {
@@ -193,11 +262,14 @@ export function BackendDatabasePage() {
   const handleSeed = async () => {
     setBusyAction('seed')
     try {
-      const next = await backendService.seedDatabase()
+      const next = await backendService.seedDatabase('missing')
       setStatus(next)
       await syncBackendData(user ? { id: user.id, role: user.role, name: user.name } : null)
       if (activeTab === 'records') await loadRecords(selectedEntity)
-      show('Database seeded', `Demo records persisted to ${next.dataBackend.toUpperCase()} backend.`, 'success')
+      const detail = next.seedResult
+        ? `${next.seedResult.inserted} added, ${next.seedResult.skipped} preserved in ${next.dataBackend.toUpperCase()}.`
+        : `Records verified in ${next.dataBackend.toUpperCase()} database.`
+      show('Database seeded', detail, 'success')
     } catch (err) {
       show(
         'Seed failed',
@@ -214,7 +286,7 @@ export function BackendDatabasePage() {
     await syncBackendData(user ? { id: user.id, role: user.role, name: user.name } : null)
     await loadStatus(true)
     setBusyAction(null)
-    show('Modules synced', 'All portal modules synchronized with backend API.')
+    show('Modules synced', 'All portal modules synchronized with backend database.')
   }
 
   const handleTestEndpoint = async (endpoint: BackendEndpointInfo) => {
@@ -319,14 +391,21 @@ export function BackendDatabasePage() {
     },
   ]
 
+  const engineLabel =
+    status?.dataBackend === 'dynamodb'
+      ? 'AWS DynamoDB'
+      : status?.dataBackend === 'sqlite'
+        ? 'SQLite Single-Table (WAL)'
+        : 'In-Memory'
+
   return (
     <div>
       <PageHeader
-        eyebrow="Infrastructure & Storage"
-        title="Backend & AWS DynamoDB"
-        description="Inspect active backend persistence, AWS DynamoDB single-table readiness, live repository records, and connected API routes."
+        eyebrow="Infrastructure & Persistence"
+        title="Backend & Single-Table Database"
+        description="Inspect active ACID SQLite WAL or AWS DynamoDB single-table persistence, live repository records across 8 collections, integrity checks, and connected API routes."
         badge={
-          <Badge tone={status?.dataBackend === 'dynamodb' ? 'forest' : 'sage'}>
+          <Badge tone={status?.dataBackend === 'memory' ? 'sage' : 'forest'}>
             {status ? `${status.dataBackend.toUpperCase()} · ${status.awsRegion}` : 'Connecting…'}
           </Badge>
         }
@@ -345,18 +424,38 @@ export function BackendDatabasePage() {
               size="sm"
               variant="outline"
               disabled={busyAction !== null}
-              onClick={() => void handleEnsureTable()}
+              onClick={() => void handleHealthCheck()}
             >
-              <Wrench size={14} />
-              Verify AWS Table
+              <Activity size={14} />
+              {busyAction === 'health' ? 'Checking…' : 'Integrity Check'}
             </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busyAction !== null}
+              onClick={() => void handleExportSnapshot()}
+            >
+              <Download size={14} />
+              {busyAction === 'export' ? 'Exporting…' : 'Export JSON'}
+            </Button>
+            {status?.awsCredentialsConfigured ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={busyAction !== null}
+                onClick={() => void handleEnsureTable()}
+              >
+                <Wrench size={14} />
+                Verify AWS Table
+              </Button>
+            ) : null}
             <Button
               size="sm"
               disabled={busyAction !== null}
               onClick={() => void handleSeed()}
             >
               <Sprout size={14} />
-              {busyAction === 'seed' ? 'Seeding…' : 'Seed Database'}
+              {busyAction === 'seed' ? 'Seeding…' : 'Seed Missing'}
             </Button>
           </>
         }
@@ -375,23 +474,33 @@ export function BackendDatabasePage() {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
-          label="Active Backend"
-          value={status ? (status.dataBackend === 'dynamodb' ? 'AWS DynamoDB' : 'In-Memory') : '—'}
-          detail={backendConnected ? 'Frontend stores synced via /api' : 'Connecting portal store'}
+          label="Active Engine"
+          value={status ? engineLabel : '—'}
+          detail={backendConnected ? 'Frontend synced with backend DB' : 'Connecting portal store'}
           icon={<Server size={18} />}
-          tone={status?.dataBackend === 'dynamodb' ? 'forest' : 'sage'}
+          tone={status?.dataBackend === 'memory' ? 'sage' : 'forest'}
         />
         <StatCard
-          label="DynamoDB Table"
-          value={status?.tableName ?? 'krishi360-dev'}
-          detail={status ? `${status.dynamo.tableStatus} · ${status.awsRegion}` : 'Checking table'}
-          icon={<Database size={18} />}
-          tone={status?.dynamo.tableStatus === 'ACTIVE' ? 'forest' : 'neutral'}
+          label={status?.sqlite ? 'SQLite Storage' : 'DynamoDB Table'}
+          value={
+            status?.sqlite
+              ? `${(status.sqlite.fileSizeBytes / 1024).toFixed(1)} KB`
+              : status?.tableName ?? 'krishi360-dev'
+          }
+          detail={
+            status?.sqlite
+              ? `${status.sqlite.journalMode} mode · ${status.sqlite.indexCount} indexes`
+              : status
+                ? `${status.dynamo.tableStatus} · ${status.awsRegion}`
+                : 'Checking storage'
+          }
+          icon={status?.sqlite ? <HardDrive size={18} /> : <Database size={18} />}
+          tone={status?.sqlite?.integrityOk || status?.dynamo.tableStatus === 'ACTIVE' ? 'forest' : 'neutral'}
         />
         <StatCard
           label="Stored Records"
           value={loading ? '…' : totalRecords}
-          detail={status ? `Across 6 repository collections` : 'Counting entities'}
+          detail="Across 8 database collections"
           icon={<Layers size={18} />}
           tone="sage"
         />
@@ -425,19 +534,30 @@ export function BackendDatabasePage() {
         <div className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
           <Card>
             <CardHeader
-              title="DynamoDB single-table architecture"
-              description="All six repositories map onto one single-table layout with composite keys and GSIs."
+              title="Single-table architecture"
+              description="All repositories map onto the unified KRISHI360 single-table PK/SK/GSI schema (SQLite WAL locally, DynamoDB on AWS)."
               icon={<Database size={18} />}
               action={
-                status ? (
+                status?.sqlite ? (
+                  <Badge tone={status.sqlite.integrityOk ? 'forest' : 'critical'}>
+                    {status.sqlite.integrityOk ? 'SQLite WAL Active' : 'Integrity Warning'}
+                  </Badge>
+                ) : status ? (
                   <StatusPill status={status.dynamo.tableStatus} />
                 ) : null
               }
             />
-            <div className="mb-4 rounded-2xl border border-line/80 bg-soft-sage/40 px-4 py-3 text-xs leading-relaxed text-ink">
-              <p className="font-bold text-forest">Connection diagnostics</p>
+            {status?.sqlite ? (
+              <div className="mb-4 rounded-2xl border border-sage/50 bg-soft-sage/45 px-4 py-3 text-xs leading-relaxed text-ink">
+                <p className="font-bold text-forest">SQLite persistence engine</p>
+                <p className="mt-1 text-muted">{status.sqlite.message}</p>
+                <p className="mt-1 font-mono text-[11px] text-forest">Path: {status.sqlite.dbPath}</p>
+              </div>
+            ) : null}
+            <div className="mb-4 rounded-2xl border border-line/80 bg-soft-sage/30 px-4 py-3 text-xs leading-relaxed text-ink">
+              <p className="font-bold text-forest">Cloud DynamoDB status</p>
               <p className="mt-1 text-muted">
-                {status?.dynamo.message ?? 'Loading AWS DynamoDB diagnostic status...'}
+                {status?.dynamo.message ?? 'Loading database diagnostic status...'}
               </p>
             </div>
             <div className="scroll-thin overflow-x-auto rounded-2xl border border-line/80">
@@ -470,7 +590,7 @@ export function BackendDatabasePage() {
             <Card>
               <CardHeader
                 title="Live collection counts"
-                description="Current item counts served by the active repository layer."
+                description="Current persisted item counts served by the active repository layer."
                 icon={<Layers size={18} />}
               />
               <div className="grid grid-cols-2 gap-3">
@@ -496,16 +616,25 @@ export function BackendDatabasePage() {
             <Card>
               <CardHeader
                 title="Server environment readiness"
-                description="Managed exclusively via server Secrets & environment variables — never entered in browser UI."
+                description="Managed exclusively via server environment variables & Secrets — never entered in browser UI."
                 icon={<ShieldCheck size={18} />}
               />
               <div className="space-y-2.5 text-xs">
                 {[
                   {
                     key: 'DATA_BACKEND',
-                    value: status?.dataBackend ?? 'memory',
-                    ready: true,
+                    value: status?.dataBackend ?? 'sqlite',
+                    ready: status?.dataBackend !== 'memory',
                   },
+                  ...(status?.sqlite
+                    ? [
+                        {
+                          key: 'SQLITE_WAL_ITEMS',
+                          value: `${status.sqlite.totalItems} rows · ${status.sqlite.journalMode}`,
+                          ready: status.sqlite.integrityOk,
+                        },
+                      ]
+                    : []),
                   {
                     key: 'AWS_REGION',
                     value: status?.awsRegion ?? 'ap-south-1',
@@ -518,12 +647,12 @@ export function BackendDatabasePage() {
                   },
                   {
                     key: 'AWS_ACCESS_KEY_ID / SECRET',
-                    value: status?.awsCredentialsConfigured ? 'Configured on server' : 'Not set in Secrets',
+                    value: status?.awsCredentialsConfigured ? 'Configured on server' : 'Not set (using SQLite)',
                     ready: Boolean(status?.awsCredentialsConfigured),
                   },
                   {
                     key: 'UPLOAD_BUCKET_NAME (S3)',
-                    value: status?.s3UploadsConfigured ? 'Configured on server' : 'Optional / simulated',
+                    value: status?.s3UploadsConfigured ? 'Configured on server' : 'Optional / local mode',
                     ready: Boolean(status?.s3UploadsConfigured),
                   },
                   {
@@ -556,7 +685,13 @@ export function BackendDatabasePage() {
         <Card className="mt-6">
           <CardHeader
             title="Live repository records"
-            description={`Showing live records queried from ${status?.dataBackend === 'dynamodb' ? `AWS DynamoDB table "${status.tableName}"` : 'local Memory repository'}. Click any row to inspect JSON.`}
+            description={`Showing live records queried from ${
+              status?.dataBackend === 'dynamodb'
+                ? `AWS DynamoDB table "${status.tableName}"`
+                : status?.dataBackend === 'sqlite'
+                  ? `persistent SQLite database (${status.sqlite?.dbPath ?? '.data/krishi360.db'})`
+                  : 'local Memory repository'
+            }. Click any row to inspect JSON.`}
             icon={<Table2 size={18} />}
             action={
               <Button
@@ -593,8 +728,8 @@ export function BackendDatabasePage() {
             onRowClick={(row) => setInspectedRecord(row)}
             emptyMessage={
               recordsLoading
-                ? 'Loading records from backend...'
-                : 'No records found in this collection yet. Use Seed Database to populate sample entries.'
+                ? 'Loading records from database...'
+                : 'No records found in this collection yet. Use Seed Missing to populate sample entries.'
             }
           />
         </Card>

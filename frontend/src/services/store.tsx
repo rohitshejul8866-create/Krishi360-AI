@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { DEMO_AUDIT_LOGS } from '../data/auditLogs'
 import { DEMO_CASES } from '../data/cropCases'
@@ -42,6 +42,7 @@ import {
   type BackendPaginated,
   type BackendSoilReading,
   type BackendStorageBatch,
+  type BackendWorkspaceSnapshot,
 } from './apiMappers'
 import { makeId } from './utils'
 
@@ -76,6 +77,20 @@ export interface EligibilityProfileInput {
   gender?: string
 }
 
+export interface SchemeCreateInput {
+  id?: string
+  name: string
+  category: string
+  state: string
+  summary: string
+  eligibility: string[]
+  documents: string[]
+  sourceLabel: string
+  sourceUrl: string
+  tags: string[]
+  dataType?: 'sample' | 'verified'
+}
+
 interface AppState {
   cases: CropCase[]
   mandiPrices: MandiPrice[]
@@ -102,6 +117,7 @@ interface AppContextValue extends AppState {
   unsaveScheme: (schemeId: string) => void
   startApplication: (schemeId: string, farmerId: string) => void
   advanceApplication: (applicationId: string) => void
+  createScheme: (input: SchemeCreateInput) => Promise<Scheme>
   checkSchemeEligibility: (schemeId: string, profile: EligibilityProfileInput) => Promise<BackendEligibilityResult>
   notify: (input: { title: string; body: string; severity: Severity; audience: Role | 'all' }) => void
   markNotificationRead: (id: string) => void
@@ -116,6 +132,7 @@ interface AppContextValue extends AppState {
   ) => Promise<{ batchStatus: StorageStatus }>
   addMandiPrice: (input: MandiPriceCreateInput) => Promise<MandiPrice>
   logSoilReading: (farmId: string, input: SoilReadingCreateInput) => Promise<BackendSoilReading>
+  updateFarmPlots: (farmId: string, plots: BackendFarm['plots']) => Promise<BackendFarm>
   addMandiAlert: (alert: Omit<MandiAlert, 'id' | 'createdAt'>) => void
   removeMandiAlert: (id: string) => void
   toggleReminder: (id: string) => void
@@ -131,7 +148,7 @@ interface AppContextValue extends AppState {
     specialisation?: string
   }) => Promise<DemoUser>
   addAuditLog: (actor: string, role: Role, action: string, target: string) => void
-  updateSettings: (patch: Partial<PlatformSettings>) => void
+  updateSettings: (patch: Partial<PlatformSettings>) => Promise<void>
 }
 
 const initialState: AppState = {
@@ -175,6 +192,25 @@ const AppContext = createContext<AppContextValue | null>(null)
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>(initialState)
+  const stateRef = useRef(state)
+  useEffect(() => {
+    stateRef.current = state
+  }, [state])
+
+  const persistWorkspace = useCallback(
+    (patch: {
+      savedSchemeIds?: string[]
+      applications?: SchemeApplication[]
+      mandiAlerts?: MandiAlert[]
+      irrigationSchedules?: IrrigationSchedule[]
+    }) => {
+      if (!stateRef.current.backendConnected) return
+      void apiClient.put('/workspace', patch).catch(() => {
+        // Keep optimistic local workspace state if request fails
+      })
+    },
+    [],
+  )
 
   const addAuditLog = useCallback((actor: string, role: Role, action: string, target: string) => {
     setState((current) => ({
@@ -199,19 +235,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
       return
     }
     try {
-      const [casesRes, mandiRes, schemesRes, storageRes, farmsRes, auditRes, usersRes] = await Promise.all([
-        apiClient.get<BackendPaginated<BackendCropCase>>('/crop-cases?limit=100', authUser),
-        apiClient.get<BackendPaginated<BackendMandiPrice>>('/mandi/prices?limit=100', authUser),
-        apiClient.get<BackendPaginated<Scheme & Record<string, unknown>>>('/schemes?limit=100', authUser),
-        apiClient.get<BackendPaginated<BackendStorageBatch>>('/storage-batches?limit=100', authUser),
-        apiClient.get<BackendPaginated<BackendFarm>>('/farms?limit=20', authUser),
-        authUser.role === 'admin'
-          ? apiClient.get<BackendPaginated<BackendAuditEntry>>('/audit-logs?limit=100', authUser)
-          : Promise.resolve(null),
-        authUser.role === 'admin'
-          ? apiClient.get<BackendPaginated<DemoUser>>('/admin/users?limit=100', authUser)
-          : Promise.resolve(null),
-      ])
+      const [casesRes, mandiRes, schemesRes, storageRes, farmsRes, workspaceRes, auditRes, usersRes] =
+        await Promise.all([
+          apiClient.get<BackendPaginated<BackendCropCase>>('/crop-cases?limit=100', authUser),
+          apiClient.get<BackendPaginated<BackendMandiPrice>>('/mandi/prices?limit=100', authUser),
+          apiClient.get<BackendPaginated<Scheme & Record<string, unknown>>>('/schemes?limit=100', authUser),
+          apiClient.get<BackendPaginated<BackendStorageBatch>>('/storage-batches?limit=100', authUser),
+          apiClient.get<BackendPaginated<BackendFarm>>('/farms?limit=20', authUser),
+          apiClient.get<BackendWorkspaceSnapshot>('/workspace', authUser).catch(() => null),
+          authUser.role === 'admin'
+            ? apiClient.get<BackendPaginated<BackendAuditEntry>>('/audit-logs?limit=100', authUser)
+            : Promise.resolve(null),
+          authUser.role === 'admin'
+            ? apiClient.get<BackendPaginated<DemoUser>>('/admin/users?limit=100', authUser)
+            : Promise.resolve(null),
+        ])
 
       const batchDetails = await Promise.all(
         storageRes.data.items.map(async (b) => {
@@ -241,6 +279,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
       }
 
+      const ws = workspaceRes?.data
+
       setState((current) => ({
         ...current,
         backendConnected: true,
@@ -252,6 +292,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
         storageBatches: batchDetails.length > 0 || authUser.role !== 'expert' ? batchDetails : current.storageBatches,
         auditLogs: auditRes ? auditRes.data.items.map(mapAuditEntry) : current.auditLogs,
         users: usersRes ? usersRes.data.items : current.users,
+        ...(ws
+          ? {
+              savedSchemeIds: ws.workspace.savedSchemeIds,
+              applications: ws.workspace.applications,
+              mandiAlerts: ws.workspace.mandiAlerts,
+              irrigationSchedules: ws.workspace.irrigationSchedules,
+              notifications: ws.notifications,
+              settings: ws.settings,
+            }
+          : {}),
       }))
     } catch {
       setState((current) => ({ ...current, backendConnected: false }))
@@ -328,31 +378,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const addInspection = useCallback(async (batchId: string, notes: string, inspector: string) => {
-    let condition: StorageStatus = 'normal'
-    setState((current) => {
-      const target = current.storageBatches.find((b) => b.id === batchId)
-      if (target) condition = target.status
-      return {
-        ...current,
-        storageBatches: current.storageBatches.map((batch) =>
-          batch.id === batchId
-            ? {
-                ...batch,
-                inspections: [
-                  {
-                    id: makeId('INSP'),
-                    date: new Date().toISOString(),
-                    inspector,
-                    notes,
-                    condition: batch.status,
-                  },
-                  ...batch.inspections,
-                ],
-              }
-            : batch,
-        ),
-      }
-    })
+    const target = stateRef.current.storageBatches.find((b) => b.id === batchId)
+    const condition: StorageStatus = target?.status ?? 'normal'
+    setState((current) => ({
+      ...current,
+      storageBatches: current.storageBatches.map((batch) =>
+        batch.id === batchId
+          ? {
+              ...batch,
+              inspections: [
+                {
+                  id: makeId('INSP'),
+                  date: new Date().toISOString(),
+                  inspector,
+                  notes,
+                  condition: batch.status,
+                },
+                ...batch.inspections,
+              ],
+            }
+          : batch,
+      ),
+    }))
 
     try {
       const res = await apiClient.post<BackendInspection>(
@@ -440,6 +487,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const updateFarmPlots = useCallback(
+    async (farmId: string, plots: BackendFarm['plots']): Promise<BackendFarm> => {
+      const res = await apiClient.put<BackendFarm>(`/farms/${encodeURIComponent(farmId)}`, { plots })
+      setState((current) => ({
+        ...current,
+        farms: current.farms.map((farm) => (farm.id === farmId ? res.data : farm)),
+      }))
+      return res.data
+    },
+    [],
+  )
+
+  const createScheme = useCallback(async (input: SchemeCreateInput): Promise<Scheme> => {
+    const res = await apiClient.post<Scheme & Record<string, unknown>>('/schemes', {
+      ...input,
+      dataType: input.dataType ?? 'sample',
+    })
+    const mapped = mapScheme(res.data)
+    setState((current) => ({
+      ...current,
+      schemes: [mapped, ...current.schemes.filter((s) => s.id !== mapped.id)],
+    }))
+    return mapped
+  }, [])
+
   const checkSchemeEligibility = useCallback(
     async (schemeId: string, profile: EligibilityProfileInput): Promise<BackendEligibilityResult> => {
       const res = await apiClient.post<BackendEligibilityResult>('/schemes/eligibility-check', {
@@ -451,6 +523,175 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const saveScheme = useCallback(
+    (schemeId: string) => {
+      if (stateRef.current.savedSchemeIds.includes(schemeId)) return
+      const nextIds = [...stateRef.current.savedSchemeIds, schemeId]
+      setState((current) => ({ ...current, savedSchemeIds: nextIds }))
+      persistWorkspace({ savedSchemeIds: nextIds })
+    },
+    [persistWorkspace],
+  )
+
+  const unsaveScheme = useCallback(
+    (schemeId: string) => {
+      const nextIds = stateRef.current.savedSchemeIds.filter((id) => id !== schemeId)
+      setState((current) => ({ ...current, savedSchemeIds: nextIds }))
+      persistWorkspace({ savedSchemeIds: nextIds })
+    },
+    [persistWorkspace],
+  )
+
+  const startApplication = useCallback(
+    (schemeId: string, farmerId: string) => {
+      if (
+        stateRef.current.applications.some(
+          (app) => app.schemeId === schemeId && app.farmerId === farmerId,
+        )
+      ) {
+        return
+      }
+      const nextApps: SchemeApplication[] = [
+        {
+          id: makeId('APP'),
+          schemeId,
+          farmerId,
+          progress: 25,
+          stage: 'Documents checklist',
+          updatedAt: new Date().toISOString(),
+        },
+        ...stateRef.current.applications,
+      ]
+      setState((current) => ({ ...current, applications: nextApps }))
+      persistWorkspace({ applications: nextApps })
+    },
+    [persistWorkspace],
+  )
+
+  const advanceApplication = useCallback(
+    (applicationId: string) => {
+      const nextApps = stateRef.current.applications.map((app) => {
+        if (app.id !== applicationId || app.progress >= 100) return app
+        const progress = Math.min(100, app.progress + 25)
+        const stage =
+          progress >= 100
+            ? 'Submitted (demo)'
+            : progress >= 75
+              ? 'Application preparation'
+              : progress >= 50
+                ? 'Documents checklist'
+                : 'Details review'
+        return { ...app, progress, stage, updatedAt: new Date().toISOString() }
+      })
+      setState((current) => ({ ...current, applications: nextApps }))
+      persistWorkspace({ applications: nextApps })
+    },
+    [persistWorkspace],
+  )
+
+  const notify = useCallback(
+    (input: { title: string; body: string; severity: Severity; audience: Role | 'all' }) => {
+      const tempId = makeId('NOTIF')
+      const optimistic: NotificationItem = {
+        id: tempId,
+        ...input,
+        createdAt: new Date().toISOString(),
+        read: false,
+      }
+      setState((current) => ({
+        ...current,
+        notifications: [optimistic, ...current.notifications],
+      }))
+      if (stateRef.current.backendConnected) {
+        void apiClient
+          .post<NotificationItem>('/notifications', input)
+          .then((res) => {
+            setState((current) => ({
+              ...current,
+              notifications: current.notifications.map((n) => (n.id === tempId ? res.data : n)),
+            }))
+          })
+          .catch(() => {})
+      }
+    },
+    [],
+  )
+
+  const markNotificationRead = useCallback((id: string) => {
+    setState((current) => ({
+      ...current,
+      notifications: current.notifications.map((item) => (item.id === id ? { ...item, read: true } : item)),
+    }))
+    if (stateRef.current.backendConnected) {
+      void apiClient.post('/notifications/read', { id }).catch(() => {})
+    }
+  }, [])
+
+  const markAllNotificationsRead = useCallback((audience: Role | 'all') => {
+    setState((current) => ({
+      ...current,
+      notifications: current.notifications.map((item) =>
+        item.audience === audience || item.audience === 'all' ? { ...item, read: true } : item,
+      ),
+    }))
+    if (stateRef.current.backendConnected) {
+      void apiClient.post('/notifications/read', { audience }).catch(() => {})
+    }
+  }, [])
+
+  const addMandiAlert = useCallback(
+    (alert: Omit<MandiAlert, 'id' | 'createdAt'>) => {
+      const nextAlerts: MandiAlert[] = [
+        { ...alert, id: makeId('ALERT'), createdAt: new Date().toISOString() },
+        ...stateRef.current.mandiAlerts,
+      ]
+      setState((current) => ({ ...current, mandiAlerts: nextAlerts }))
+      persistWorkspace({ mandiAlerts: nextAlerts })
+    },
+    [persistWorkspace],
+  )
+
+  const removeMandiAlert = useCallback(
+    (id: string) => {
+      const nextAlerts = stateRef.current.mandiAlerts.filter((alert) => alert.id !== id)
+      setState((current) => ({ ...current, mandiAlerts: nextAlerts }))
+      persistWorkspace({ mandiAlerts: nextAlerts })
+    },
+    [persistWorkspace],
+  )
+
+  const toggleReminder = useCallback(
+    (id: string) => {
+      const nextSchedules = stateRef.current.irrigationSchedules.map((item) =>
+        item.id === id ? { ...item, reminder: !item.reminder } : item,
+      )
+      setState((current) => ({ ...current, irrigationSchedules: nextSchedules }))
+      persistWorkspace({ irrigationSchedules: nextSchedules })
+    },
+    [persistWorkspace],
+  )
+
+  const updateSettings = useCallback(async (patch: Partial<PlatformSettings>) => {
+    const merged: PlatformSettings = { ...stateRef.current.settings, ...patch }
+    setState((current) => ({ ...current, settings: merged }))
+    if (stateRef.current.backendConnected) {
+      try {
+        const res = await apiClient.put<PlatformSettings>('/admin/settings', {
+          language: merged.language,
+          notificationsEnabled: merged.notificationsEnabled,
+          demoMode: merged.demoMode,
+          compactTables: merged.compactTables,
+          expertReviewSlaHours: merged.expertReviewSlaHours,
+          storageAlertTemp: merged.storageAlertTemp,
+          storageAlertHumidity: merged.storageAlertHumidity,
+        })
+        setState((current) => ({ ...current, settings: res.data }))
+      } catch {
+        // Retain optimistic local settings if non-admin or offline
+      }
+    }
+  }, [])
+
   const value = useMemo<AppContextValue>(
     () => ({
       ...state,
@@ -461,109 +702,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
           cases: [cropCase, ...current.cases.filter((item) => item.id !== cropCase.id)],
         })),
       reviewCase,
-      saveScheme: (schemeId) =>
-        setState((current) =>
-          current.savedSchemeIds.includes(schemeId)
-            ? current
-            : { ...current, savedSchemeIds: [...current.savedSchemeIds, schemeId] },
-        ),
-      unsaveScheme: (schemeId) =>
-        setState((current) => ({
-          ...current,
-          savedSchemeIds: current.savedSchemeIds.filter((id) => id !== schemeId),
-        })),
-      startApplication: (schemeId, farmerId) =>
-        setState((current) =>
-          current.applications.some((app) => app.schemeId === schemeId && app.farmerId === farmerId)
-            ? current
-            : {
-                ...current,
-                applications: [
-                  {
-                    id: makeId('APP'),
-                    schemeId,
-                    farmerId,
-                    progress: 25,
-                    stage: 'Documents checklist',
-                    updatedAt: new Date().toISOString(),
-                  },
-                  ...current.applications,
-                ],
-              },
-        ),
-      advanceApplication: (applicationId) =>
-        setState((current) => ({
-          ...current,
-          applications: current.applications.map((app) => {
-            if (app.id !== applicationId || app.progress >= 100) return app
-            const progress = Math.min(100, app.progress + 25)
-            const stage =
-              progress >= 100
-                ? 'Submitted (demo)'
-                : progress >= 75
-                  ? 'Application preparation'
-                  : progress >= 50
-                    ? 'Documents checklist'
-                    : 'Details review'
-            return { ...app, progress, stage, updatedAt: new Date().toISOString() }
-          }),
-        })),
+      saveScheme,
+      unsaveScheme,
+      startApplication,
+      advanceApplication,
+      createScheme,
       checkSchemeEligibility,
-      notify: ({ title, body, severity, audience }) =>
-        setState((current) => ({
-          ...current,
-          notifications: [
-            {
-              id: makeId('NOTIF'),
-              title,
-              body,
-              severity,
-              audience,
-              createdAt: new Date().toISOString(),
-              read: false,
-            },
-            ...current.notifications,
-          ],
-        })),
-      markNotificationRead: (id) =>
-        setState((current) => ({
-          ...current,
-          notifications: current.notifications.map((item) =>
-            item.id === id ? { ...item, read: true } : item,
-          ),
-        })),
-      markAllNotificationsRead: (audience) =>
-        setState((current) => ({
-          ...current,
-          notifications: current.notifications.map((item) =>
-            item.audience === audience || item.audience === 'all' ? { ...item, read: true } : item,
-          ),
-        })),
+      notify,
+      markNotificationRead,
+      markAllNotificationsRead,
       addStorageBatch,
       addInspection,
       addStorageReading,
       addMandiPrice,
       logSoilReading,
-      addMandiAlert: (alert) =>
-        setState((current) => ({
-          ...current,
-          mandiAlerts: [
-            { ...alert, id: makeId('ALERT'), createdAt: new Date().toISOString() },
-            ...current.mandiAlerts,
-          ],
-        })),
-      removeMandiAlert: (id) =>
-        setState((current) => ({
-          ...current,
-          mandiAlerts: current.mandiAlerts.filter((alert) => alert.id !== id),
-        })),
-      toggleReminder: (id) =>
-        setState((current) => ({
-          ...current,
-          irrigationSchedules: current.irrigationSchedules.map((item) =>
-            item.id === id ? { ...item, reminder: !item.reminder } : item,
-          ),
-        })),
+      updateFarmPlots,
+      addMandiAlert,
+      removeMandiAlert,
+      toggleReminder,
       updateUserStatus: (id, status) => {
         setState((current) => ({
           ...current,
@@ -587,20 +743,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return res.data
       },
       addAuditLog,
-      updateSettings: (patch) =>
-        setState((current) => ({ ...current, settings: { ...current.settings, ...patch } })),
+      updateSettings,
     }),
     [
       state,
       syncBackendData,
       reviewCase,
+      saveScheme,
+      unsaveScheme,
+      startApplication,
+      advanceApplication,
+      createScheme,
       checkSchemeEligibility,
+      notify,
+      markNotificationRead,
+      markAllNotificationsRead,
       addStorageBatch,
       addInspection,
       addStorageReading,
       addMandiPrice,
       logSoilReading,
+      updateFarmPlots,
+      addMandiAlert,
+      removeMandiAlert,
+      toggleReminder,
       addAuditLog,
+      updateSettings,
     ],
   )
 

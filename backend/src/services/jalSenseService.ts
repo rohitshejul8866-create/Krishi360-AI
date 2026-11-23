@@ -142,6 +142,58 @@ export class JalSenseService {
     return this.getAccessible(user, id);
   }
 
+  async updateFarm(
+    user: AuthUser,
+    id: string,
+    patch: {
+      name?: string;
+      location?: string;
+      areaHa?: number;
+      soilType?: string;
+      irrigationType?: string;
+      plots?: Array<{
+        id?: string;
+        name: string;
+        areaHa: number;
+        crop: string;
+        growthStage: string;
+        soilMoisture?: number;
+        lastIrrigated?: string;
+        status?: 'healthy' | 'watch' | 'attention';
+      }>;
+    },
+    logger: Logger,
+  ): Promise<Farm> {
+    const existing = await this.getAccessible(user, id);
+    const nextPlots: Plot[] = patch.plots
+      ? patch.plots.map((p) => ({
+          id: p.id && p.id.trim() ? p.id.trim() : makeId('PLOT'),
+          name: p.name,
+          areaHa: p.areaHa,
+          crop: p.crop,
+          growthStage: p.growthStage,
+          ...(p.soilMoisture !== undefined ? { soilMoisture: p.soilMoisture } : {}),
+          ...(p.lastIrrigated ? { lastIrrigated: p.lastIrrigated } : {}),
+          ...(p.status ? { status: p.status } : {}),
+        }))
+      : existing.plots;
+    const computedArea = patch.areaHa ?? Number(nextPlots.reduce((sum, p) => sum + p.areaHa, 0).toFixed(2));
+    const updated: Farm = {
+      ...existing,
+      ...(patch.name ? { name: patch.name } : {}),
+      ...(patch.location ? { location: patch.location } : {}),
+      ...(patch.soilType ? { soilType: patch.soilType } : {}),
+      ...(patch.irrigationType ? { irrigationType: patch.irrigationType } : {}),
+      areaHa: computedArea > 0 ? computedArea : existing.areaHa,
+      plots: nextPlots,
+      updatedAt: nowIso(),
+      version: existing.version + 1,
+    };
+    await this.repo.update(updated, existing.version);
+    await this.audit.record(logger, user, 'farm.updated', id, { plotCount: nextPlots.length });
+    return updated;
+  }
+
   async addReading(user: AuthUser, farmId: string, input: SoilReadingInput, logger: Logger): Promise<SoilReading> {
     const farm = await this.getAccessible(user, farmId);
     const plot = farm.plots.find((p) => p.id === input.plotId);

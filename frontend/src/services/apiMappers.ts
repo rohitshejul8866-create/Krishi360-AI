@@ -4,11 +4,16 @@ import type {
   CaseAlternative,
   CropCase,
   IrrigationRecommendation,
+  IrrigationSchedule,
+  MandiAlert,
   MandiPrice,
+  NotificationItem,
+  PlatformSettings,
   Priority,
   ReviewStatus,
   Role,
   Scheme,
+  SchemeApplication,
   StorageBatch,
   StorageStatus,
 } from '../types'
@@ -122,7 +127,28 @@ export interface BackendFarm {
   areaHa: number
   soilType: string
   irrigationType: string
-  plots: Array<{ id: string; name: string; areaHa: number; crop: string; growthStage: string }>
+  plots: Array<{
+    id: string
+    name: string
+    areaHa: number
+    crop: string
+    growthStage: string
+    soilMoisture?: number
+    lastIrrigated?: string
+    status?: 'healthy' | 'watch' | 'attention'
+  }>
+}
+
+export interface BackendWorkspaceSnapshot {
+  workspace: {
+    userId: string
+    savedSchemeIds: string[]
+    applications: SchemeApplication[]
+    mandiAlerts: MandiAlert[]
+    irrigationSchedules: IrrigationSchedule[]
+  }
+  notifications: NotificationItem[]
+  settings: PlatformSettings
 }
 
 export interface BackendSoilReading {

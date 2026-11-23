@@ -214,11 +214,153 @@ export const backendEntityEnum = z.enum([
   'storageBatches',
   'farms',
   'auditLogs',
+  'users',
+  'notifications',
 ]);
 
 export const backendRecordsQuerySchema = paginationQuery.extend({
   entity: backendEntityEnum,
 });
+
+export const backendSeedBodySchema = z
+  .object({
+    mode: z.enum(['missing', 'reset']).default('missing'),
+  })
+  .strict()
+  .optional();
+
+export const farmUpdateSchema = z
+  .object({
+    name: trimmed(1, 120).optional(),
+    location: trimmed(1, 160).optional(),
+    areaHa: z.number().positive().max(100000).optional(),
+    soilType: trimmed(1, 80).optional(),
+    irrigationType: trimmed(1, 80).optional(),
+    plots: z
+      .array(
+        z
+          .object({
+            id: trimmed(1, 128).optional(),
+            name: trimmed(1, 80),
+            areaHa: z.number().positive().max(10000),
+            crop: trimmed(1, 80),
+            growthStage: trimmed(1, 80),
+            soilMoisture: z.number().min(0).max(100).optional(),
+            lastIrrigated: trimmed(1, 64).optional(),
+            status: z.enum(['healthy', 'watch', 'attention']).optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(50)
+      .optional(),
+  })
+  .strict();
+
+export const schemeCreateSchema = z
+  .object({
+    id: trimmed(1, 128).optional(),
+    name: trimmed(2, 160),
+    category: trimmed(2, 80),
+    state: trimmed(2, 80),
+    summary: trimmed(10, 2000),
+    eligibility: z.array(trimmed(2, 300)).min(1).max(20),
+    documents: z.array(trimmed(2, 300)).min(1).max(20),
+    sourceLabel: trimmed(2, 160),
+    sourceUrl: z.string().trim().url().max(512),
+    tags: z.array(trimmed(1, 40)).max(20).default([]),
+    dataType: z.enum(['sample', 'verified']).default('sample'),
+  })
+  .strict();
+
+export const profileUpdateSchema = z
+  .object({
+    name: trimmed(2, 120).optional(),
+    location: trimmed(2, 160).optional(),
+    phone: trimmed(3, 40).optional(),
+    specialisation: trimmed(2, 120).optional(),
+    organisation: trimmed(2, 120).optional(),
+  })
+  .strict();
+
+export const workspaceSaveSchema = z
+  .object({
+    savedSchemeIds: z.array(trimmed(1, 128)).max(200).optional(),
+    applications: z
+      .array(
+        z
+          .object({
+            id: trimmed(1, 128),
+            schemeId: trimmed(1, 128),
+            farmerId: trimmed(1, 128),
+            progress: z.number().min(0).max(100),
+            stage: trimmed(1, 120),
+            updatedAt: trimmed(1, 64),
+          })
+          .strict(),
+      )
+      .max(200)
+      .optional(),
+    mandiAlerts: z
+      .array(
+        z
+          .object({
+            id: trimmed(1, 128),
+            crop: trimmed(1, 80),
+            district: trimmed(1, 80),
+            targetPrice: z.number().nonnegative().max(1_000_000),
+            createdAt: trimmed(1, 64),
+          })
+          .strict(),
+      )
+      .max(100)
+      .optional(),
+    irrigationSchedules: z
+      .array(
+        z
+          .object({
+            id: trimmed(1, 128),
+            plot: trimmed(1, 120),
+            crop: trimmed(1, 80),
+            stage: trimmed(1, 80),
+            nextDate: trimmed(1, 64),
+            waterLitres: z.number().nonnegative().max(10_000_000).optional(),
+            reminder: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(100)
+      .optional(),
+  })
+  .strict();
+
+export const notificationCreateSchema = z
+  .object({
+    title: trimmed(1, 160),
+    body: trimmed(1, 1000),
+    severity: z.enum(['info', 'success', 'warning', 'critical']).default('info'),
+    audience: z.enum(['farmer', 'expert', 'admin', 'all']).default('all'),
+  })
+  .strict();
+
+export const notificationReadSchema = z
+  .object({
+    id: trimmed(1, 128).optional(),
+    audience: z.enum(['farmer', 'expert', 'admin', 'all']).optional(),
+  })
+  .strict();
+
+export const platformSettingsSchema = z
+  .object({
+    language: trimmed(2, 40),
+    notificationsEnabled: z.boolean(),
+    demoMode: z.boolean(),
+    compactTables: z.boolean(),
+    expertReviewSlaHours: z.number().int().min(1).max(168),
+    storageAlertTemp: z.number().min(-10).max(60),
+    storageAlertHumidity: z.number().min(0).max(100),
+  })
+  .strict();
 
 export const farmerRegisterSchema = z
   .object({

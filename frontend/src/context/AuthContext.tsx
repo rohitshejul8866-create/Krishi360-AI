@@ -105,8 +105,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null)
   }, [addAuditLog, user])
 
-  const updateProfile = useCallback((patch: Partial<DemoUser>) => {
+  const updateProfile = useCallback(async (patch: Partial<DemoUser>) => {
     setUser((current) => (current ? { ...current, ...patch } : current))
+    try {
+      const updated = await authService.updateProfile({
+        ...(patch.name ? { name: patch.name } : {}),
+        ...(patch.location ? { location: patch.location } : {}),
+        ...(patch.phone ? { phone: patch.phone } : {}),
+        ...(patch.specialisation ? { specialisation: patch.specialisation } : {}),
+        ...(patch.organisation ? { organisation: patch.organisation } : {}),
+      })
+      setUser(updated)
+    } catch {
+      // Retain optimistic local profile update if offline
+    }
   }, [])
 
   const value = useMemo<AuthContextValue>(

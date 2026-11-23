@@ -17,6 +17,8 @@ import { buildMandiRoutes } from './backend/src/handlers/mandi';
 import { createRouter, type Route } from './backend/src/handlers/router';
 import { buildAuditRoutes, buildSchemeRoutes } from './backend/src/handlers/schemes';
 import { buildGrainGuardRoutes } from './backend/src/handlers/storage';
+import { buildWorkspaceRoutes } from './backend/src/handlers/workspace';
+import { closeSqliteDbs } from './backend/src/repositories/sqlite/client';
 import { seedDemoPortalData } from './backend/src/seed/demoPortalSeed';
 import { ensureDynamoTable } from './backend/src/services/awsDatabaseService';
 
@@ -72,7 +74,7 @@ async function startServer() {
     ...process.env,
     NODE_ENV: process.env.NODE_ENV ?? 'development',
     AUTH_MODE: process.env.AUTH_MODE ?? 'dev',
-    DATA_BACKEND: process.env.DATA_BACKEND ?? 'memory',
+    DATA_BACKEND: process.env.DATA_BACKEND ?? 'sqlite',
     AI_PROVIDER: process.env.AI_PROVIDER ?? 'heuristic',
     ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS ?? allowedOrigins.join(','),
     PORT: String(port),
@@ -84,10 +86,7 @@ async function startServer() {
   if (config.dataBackend === 'dynamodb') {
     try {
       await ensureDynamoTable(config);
-      const existing = await container.repos.schemes.list({}, { limit: 1 });
-      if (existing.items.length === 0) {
-        await seedDemoPortalData(container.repos);
-      }
+      await seedDemoPortalData(container.repos, { mode: 'missing' });
     } catch (err) {
       console.warn(
         'DynamoDB startup init skipped:',
@@ -95,7 +94,7 @@ async function startServer() {
       );
     }
   } else {
-    await seedDemoPortalData(container.repos);
+    await seedDemoPortalData(container.repos, { mode: 'missing' });
   }
 
   const routes: Route[] = [
@@ -107,6 +106,7 @@ async function startServer() {
     ...buildGrainGuardRoutes(config, container),
     ...buildSchemeRoutes(config, container),
     ...buildAuditRoutes(config, container),
+    ...buildWorkspaceRoutes(config, container),
   ];
   const compiled = compileRoutes(routes);
   const router = createRouter(routes, config);
@@ -248,8 +248,15 @@ async function startServer() {
   }
 
   httpServer.listen(port, '0.0.0.0', () => {
-    console.log(`KRISHI360 server listening on http://0.0.0.0:${port}`);
+    console.log(`KRISHI360 server listening on http://0.0.0.0:${port} (backend: ${config.dataBackend})`);
   });
+
+  const shutdown = () => {
+    closeSqliteDbs();
+    httpServer.close(() => process.exit(0));
+  };
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 startServer().catch((err) => {

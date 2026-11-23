@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { BellRing, Database, Download, RotateCcw, Save, ShieldCheck, SlidersHorizontal, Users } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
-import { DemoNote } from '../../components/common/DemoNote'
 import { Card, CardHeader } from '../../components/ui/Card'
+import { Badge } from '../../components/ui/Badge'
 import { Button, buttonClasses } from '../../components/ui/Button'
 import { Field, Input, Select } from '../../components/ui/Input'
 import { useToast } from '../../context/ToastContext'
@@ -32,45 +32,61 @@ function Toggle({ label, description, checked, onChange }: { label: string; desc
 }
 
 export function PlatformSettingsPage() {
-  const { settings, updateSettings, addAuditLog, notify } = useApp()
+  const { settings, updateSettings, addAuditLog, notify, backendConnected } = useApp()
   const { show } = useToast()
   const [draft, setDraft] = useState<PlatformSettings>(settings)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setDraft(settings)
+  }, [settings])
 
   const set = <K extends keyof PlatformSettings>(key: K, value: PlatformSettings[K]) =>
     setDraft((current) => ({ ...current, [key]: value }))
 
-  const save = () => {
+  const save = async () => {
     const next: Record<string, string> = {}
     if (draft.expertReviewSlaHours < 1 || draft.expertReviewSlaHours > 168) next.sla = 'Choose between 1 and 168 hours.'
     if (draft.storageAlertTemp < -10 || draft.storageAlertTemp > 60) next.temp = 'Choose between -10°C and 60°C.'
     if (draft.storageAlertHumidity < 0 || draft.storageAlertHumidity > 100) next.humidity = 'Choose between 0% and 100%.'
     setErrors(next)
     if (Object.keys(next).length > 0) return
-    updateSettings(draft)
-    addAuditLog('Admin User', 'admin', 'Updated platform settings', 'Local demo configuration')
-    show('Settings saved', 'Demo preferences were updated in the local store.')
+    setSaving(true)
+    try {
+      await updateSettings(draft)
+      addAuditLog('Admin User', 'admin', 'Updated platform settings', 'SETTINGS#global')
+      show(
+        'Settings saved',
+        backendConnected
+          ? 'Platform configuration persisted to the backend database.'
+          : 'Preferences updated in local store.',
+        'success',
+      )
+    } finally {
+      setSaving(false)
+    }
   }
 
   const exportSettings = () => {
     const url = URL.createObjectURL(new Blob([JSON.stringify(draft, null, 2)], { type: 'application/json' }))
     const link = document.createElement('a')
     link.href = url
-    link.download = 'krishi360-demo-settings.json'
+    link.download = 'krishi360-platform-settings.json'
     document.body.appendChild(link)
     link.click()
     link.remove()
     URL.revokeObjectURL(url)
-    show('Settings exported', 'Current demo preferences downloaded as JSON.')
+    show('Settings exported', 'Current platform preferences downloaded as JSON.')
   }
 
   const sendTestNotification = () => {
     if (!draft.notificationsEnabled) {
-      show('Notifications disabled', 'Enable demo notifications before sending a test.', 'warning')
+      show('Notifications disabled', 'Enable platform notifications before sending a test.', 'warning')
       return
     }
-    notify({ title: 'Test demo notification', body: 'Platform settings test message generated locally.', severity: 'info', audience: 'admin' })
-    show('Test notification created', 'A local admin notification was added to the demo store.')
+    notify({ title: 'Test platform notification', body: 'Platform settings broadcast persisted via notification service.', severity: 'info', audience: 'admin' })
+    show('Test notification created', 'Admin notification persisted to active feed.')
   }
 
   return (
@@ -78,25 +94,25 @@ export function PlatformSettingsPage() {
       <PageHeader
         eyebrow="Configuration"
         title="Platform settings"
-        description="Tune the behaviour of the frontend demo. Changes are stored in memory and reset on a page refresh."
-        badge={<DemoNote label="Local preferences" />}
+        description="Configure platform defaults, SLA thresholds, and alert limits persisted in the backend database."
+        badge={<Badge tone={backendConnected ? 'forest' : 'sage'}>{backendConnected ? 'Database synced' : 'Local store'}</Badge>}
         actions={
           <>
             <Button size="sm" variant="outline" onClick={exportSettings}><Download size={14} /> Export</Button>
-            <Button size="sm" onClick={save}><Save size={14} /> Save changes</Button>
+            <Button size="sm" disabled={saving} onClick={() => void save()}><Save size={14} /> {saving ? 'Saving…' : 'Save changes'}</Button>
           </>
         }
       />
 
       <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
         <Card>
-          <CardHeader title="General preferences" description="These options affect the demo interface and local rules." icon={<SlidersHorizontal size={18} />} />
+          <CardHeader title="General preferences" description="Global configuration stored in the single-table SETTINGS#global record." icon={<SlidersHorizontal size={18} />} />
           <div className="space-y-4">
-            <Field label="Interface language label" hint="Stored for the demo; UI copy remains in English.">
+            <Field label="Interface language label" hint="Persisted per platform configuration.">
               <Select value={draft.language} onChange={(event) => set('language', event.target.value)} options={[{ value: 'English', label: 'English' }, { value: 'हिन्दी', label: 'हिन्दी' }, { value: 'मराठी', label: 'मराठी' }]} />
             </Field>
-            <Toggle label="Demo notifications" description="Allow local test notifications to be created from this page." checked={draft.notificationsEnabled} onChange={(value) => set('notificationsEnabled', value)} />
-            <Toggle label="Demo mode" description="Show simulation labels in platform messaging. Admin badges remain visible for clarity." checked={draft.demoMode} onChange={(value) => set('demoMode', value)} />
+            <Toggle label="Platform notifications" description="Allow notifications to be generated and stored in the notification feed." checked={draft.notificationsEnabled} onChange={(value) => set('notificationsEnabled', value)} />
+            <Toggle label="Demo labels" description="Display indicative/sample badges on demonstration telemetry." checked={draft.demoMode} onChange={(value) => set('demoMode', value)} />
             <Toggle label="Compact tables" description="Reduce row padding across management tables." checked={draft.compactTables} onChange={(value) => set('compactTables', value)} />
             <div className="grid gap-4 sm:grid-cols-3">
               <Field label="Expert SLA (hours)" error={errors.sla}><Input type="number" min="1" max="168" value={draft.expertReviewSlaHours} onChange={(event) => set('expertReviewSlaHours', Number(event.target.value))} /></Field>
@@ -104,7 +120,7 @@ export function PlatformSettingsPage() {
               <Field label="Humidity alert (%)" error={errors.humidity}><Input type="number" min="0" max="100" value={draft.storageAlertHumidity} onChange={(event) => set('storageAlertHumidity', Number(event.target.value))} /></Field>
             </div>
             <div className="flex flex-wrap gap-3 pt-2">
-              <Button onClick={save}><Save size={15} /> Save changes</Button>
+              <Button disabled={saving} onClick={() => void save()}><Save size={15} /> {saving ? 'Saving…' : 'Save changes'}</Button>
               <Button variant="ghost" onClick={() => { setDraft(settings); setErrors({}); show('Changes discarded', 'Draft settings were restored.') }}><RotateCcw size={15} /> Discard</Button>
             </div>
           </div>
@@ -128,12 +144,12 @@ export function PlatformSettingsPage() {
           </Card>
 
           <Card>
-            <CardHeader title="Data & AWS backend" description="Connected Express API and AWS DynamoDB single-table persistence." icon={<Database size={18} />} />
+            <CardHeader title="Database & single-table storage" description="Connected Express API with persistent SQLite WAL & AWS DynamoDB." icon={<Database size={18} />} />
             <div className="space-y-3 text-sm leading-relaxed text-ink">
-              <p>Cases, mandi prices, schemes, storage batches, farms, and audit logs persist through the <code className="rounded bg-soft-sage px-1.5 py-0.5 text-xs text-forest">/api/*</code> backend repository layer (In-Memory locally or AWS DynamoDB via server environment Secrets).</p>
+              <p>Cases, mandi prices, schemes, storage batches, farms, user accounts, notifications, and audit logs persist through the <code className="rounded bg-soft-sage px-1.5 py-0.5 text-xs text-forest">/api/*</code> backend repository layer (SQLite WAL locally or AWS DynamoDB in cloud environments).</p>
               <div className="flex flex-wrap gap-2">
                 <Link to="/admin/backend" className={buttonClasses('outline', 'sm')}>
-                  <Database size={14} /> Open Backend & AWS DB
+                  <Database size={14} /> Open Backend & DB
                 </Link>
                 <Button size="sm" variant="outline" onClick={sendTestNotification}><BellRing size={14} /> Send test notification</Button>
               </div>

@@ -11,6 +11,7 @@ import type { MandiPrice } from '../models/mandi';
 import type { Scheme } from '../models/scheme';
 import type { Inspection, StorageAlert, StorageBatch, StorageReading } from '../models/storage';
 import type { UserAccount } from '../models/user';
+import type { NotificationRecord, PlatformSettingsRecord, UserWorkspaceState } from '../models/workspace';
 import type { Page, PageRequest } from '../utils/pagination';
 
 export interface CropCaseRepository {
@@ -57,6 +58,7 @@ export interface StorageRepository {
   listByOwner(ownerId: string, page: PageRequest): Promise<Page<StorageBatch>>;
   listAll(page: PageRequest): Promise<Page<StorageBatch>>;
   addReading(reading: StorageReading): Promise<void>;
+  listReadings(batchId: string, page: PageRequest): Promise<Page<StorageReading>>;
   addAlert(alert: StorageAlert): Promise<void>;
   listAlerts(batchId: string, page: PageRequest): Promise<Page<StorageAlert>>;
   addInspection(inspection: Inspection): Promise<void>;
@@ -86,4 +88,13 @@ export interface UserRepository {
   getByEmail(email: string): Promise<UserAccount | null>;
   update(item: UserAccount, expectedVersion: number): Promise<void>;
   list(page: PageRequest, role?: Role): Promise<Page<UserAccount>>;
+}
+
+export interface WorkspaceRepository {
+  getUserWorkspace(userId: string): Promise<UserWorkspaceState | null>;
+  saveUserWorkspace(state: UserWorkspaceState): Promise<void>;
+  listNotifications(page: PageRequest): Promise<Page<NotificationRecord>>;
+  putNotification(item: NotificationRecord): Promise<void>;
+  getPlatformSettings(): Promise<PlatformSettingsRecord | null>;
+  savePlatformSettings(settings: PlatformSettingsRecord): Promise<void>;
 }

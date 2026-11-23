@@ -6,13 +6,27 @@ import type { MandiPrice } from '../models/mandi';
 import type { Scheme } from '../models/scheme';
 import type { Inspection, StorageBatch } from '../models/storage';
 import type { UserAccount } from '../models/user';
+import type { NotificationRecord, PlatformSettingsRecord } from '../models/workspace';
 import { nowIso } from '../utils/ids';
+import { sampleMandiPrices, sampleSchemes } from './sampleData';
 
-export async function seedDemoPortalData(repos: Container['repos']): Promise<void> {
+export interface SeedOptions {
+  /** 'missing' preserves user edits and only inserts absent seed records; 'reset' re-writes seed records. */
+  mode?: 'missing' | 'reset';
+}
+
+export async function seedDemoPortalData(
+  repos: Container['repos'],
+  options: SeedOptions = {},
+): Promise<{ inserted: number; skipped: number }> {
+  const mode = options.mode ?? 'missing';
   const ts = nowIso();
+  let inserted = 0;
+  let skipped = 0;
 
   const mandiSource = 'Demo market dataset — sample only';
   const mandiPrices: MandiPrice[] = [
+    ...sampleMandiPrices(),
     { id: 'm-01', crop: 'Tomato', state: 'Maharashtra', district: 'Nashik', mandi: 'Nashik APMC', minPrice: 1420, maxPrice: 2180, modalPrice: 1840, unit: 'INR/quintal', date: '2026-11-21', source: mandiSource, dataType: 'sample', changePct: 4.2, lastUpdatedAt: ts, createdAt: ts, version: 1 },
     { id: 'm-02', crop: 'Tomato', state: 'Maharashtra', district: 'Pune', mandi: 'Pune APMC', minPrice: 1360, maxPrice: 2020, modalPrice: 1710, unit: 'INR/quintal', date: '2026-11-21', source: mandiSource, dataType: 'sample', changePct: 2.1, lastUpdatedAt: ts, createdAt: ts, version: 1 },
     { id: 'm-03', crop: 'Tomato', state: 'Karnataka', district: 'Bengaluru', mandi: 'Yeshwanthpur APMC', minPrice: 1510, maxPrice: 2320, modalPrice: 1960, unit: 'INR/quintal', date: '2026-11-21', source: mandiSource, dataType: 'sample', changePct: -1.4, lastUpdatedAt: ts, createdAt: ts, version: 1 },
@@ -29,11 +43,19 @@ export async function seedDemoPortalData(repos: Container['repos']): Promise<voi
     { id: 'm-14', crop: 'Maize', state: 'Telangana', district: 'Warangal', mandi: 'Warangal Market', minPrice: 1980, maxPrice: 2410, modalPrice: 2190, unit: 'INR/quintal', date: '2026-11-21', source: mandiSource, dataType: 'sample', changePct: 2.4, lastUpdatedAt: ts, createdAt: ts, version: 1 },
     { id: 'm-15', crop: 'Potato', state: 'Uttar Pradesh', district: 'Lucknow', mandi: 'Lucknow Mandi', minPrice: 1080, maxPrice: 1560, modalPrice: 1320, unit: 'INR/quintal', date: '2026-11-21', source: mandiSource, dataType: 'sample', changePct: -1.7, lastUpdatedAt: ts, createdAt: ts, version: 1 },
   ];
-  for (const price of mandiPrices) await repos.mandi.put(price);
+  for (const price of mandiPrices) {
+    if (mode === 'missing' && (await repos.mandi.get(price.id))) {
+      skipped++;
+      continue;
+    }
+    await repos.mandi.put(price);
+    inserted++;
+  }
 
   const officialSource = 'https://www.india.gov.in/';
   const sourceLabel = 'Official India government information portal — verify current details';
   const schemes: Scheme[] = [
+    ...sampleSchemes(),
     {
       id: 'scheme-01',
       name: 'Crop Insurance Awareness',
@@ -191,7 +213,14 @@ export async function seedDemoPortalData(repos: Container['repos']): Promise<voi
       version: 1,
     },
   ];
-  for (const scheme of schemes) await repos.schemes.put(scheme);
+  for (const scheme of schemes) {
+    if (mode === 'missing' && (await repos.schemes.get(scheme.id))) {
+      skipped++;
+      continue;
+    }
+    await repos.schemes.put(scheme);
+    inserted++;
+  }
 
   const cropCases: CropCase[] = [
     {
@@ -418,7 +447,20 @@ export async function seedDemoPortalData(repos: Container['repos']): Promise<voi
       version: 1,
     },
   ];
-  for (const cropCase of cropCases) await repos.cases.create(cropCase);
+  for (const cropCase of cropCases) {
+    const exists = await repos.cases.get(cropCase.id);
+    if (exists) {
+      if (mode === 'reset') {
+        await repos.cases.update({ ...cropCase, version: exists.version + 1 }, exists.version);
+        inserted++;
+      } else {
+        skipped++;
+      }
+      continue;
+    }
+    await repos.cases.create(cropCase);
+    inserted++;
+  }
 
   const farm: Farm = {
     id: 'farm-001',
@@ -429,16 +471,22 @@ export async function seedDemoPortalData(repos: Container['repos']): Promise<voi
     soilType: 'Black cotton soil',
     irrigationType: 'Drip + canal',
     plots: [
-      { id: 'plot-a', name: 'Plot A — North Field', areaHa: 2.1, crop: 'Tomato', growthStage: 'Flowering' },
-      { id: 'plot-b', name: 'Plot B — East Field', areaHa: 1.8, crop: 'Wheat', growthStage: 'Vegetative' },
-      { id: 'plot-c', name: 'Plot C — Orchard', areaHa: 1.5, crop: 'Grapes', growthStage: 'Fruit / grain formation' },
-      { id: 'plot-d', name: 'Plot D — Storage Field', areaHa: 1.0, crop: 'Onion', growthStage: 'Vegetative' },
+      { id: 'plot-a', name: 'Plot A — North Field', areaHa: 2.1, crop: 'Tomato', growthStage: 'Flowering', soilMoisture: 32, lastIrrigated: '2026-11-20', status: 'healthy' },
+      { id: 'plot-b', name: 'Plot B — East Field', areaHa: 1.8, crop: 'Wheat', growthStage: 'Vegetative', soilMoisture: 26, lastIrrigated: '2026-11-19', status: 'watch' },
+      { id: 'plot-c', name: 'Plot C — Orchard', areaHa: 1.5, crop: 'Grapes', growthStage: 'Fruit / grain formation', soilMoisture: 41, lastIrrigated: '2026-11-21', status: 'healthy' },
+      { id: 'plot-d', name: 'Plot D — Storage Field', areaHa: 1.0, crop: 'Onion', growthStage: 'Vegetative', soilMoisture: 22, lastIrrigated: '2026-11-17', status: 'attention' },
     ],
     createdAt: ts,
     updatedAt: ts,
     version: 1,
   };
-  await repos.farms.create(farm);
+  const existingFarm = await repos.farms.get(farm.id);
+  if (!existingFarm) {
+    await repos.farms.create(farm);
+    inserted++;
+  } else {
+    skipped++;
+  }
 
   const batches: Array<{ batch: StorageBatch; inspections: Inspection[] }> = [
     {
@@ -558,17 +606,27 @@ export async function seedDemoPortalData(repos: Container['repos']): Promise<voi
     },
   ];
   for (const entry of batches) {
-    await repos.storage.createBatch(entry.batch);
-    for (const insp of entry.inspections) await repos.storage.addInspection(insp);
+    const existingBatch = await repos.storage.getBatch(entry.batch.id);
+    if (!existingBatch) {
+      await repos.storage.createBatch(entry.batch);
+      for (const insp of entry.inspections) await repos.storage.addInspection(insp);
+      inserted++;
+    } else {
+      skipped++;
+    }
   }
 
-  const auditEntries: AuditEntry[] = [
-    { id: 'AUD-001', actorId: 'farmer-001', actorRole: 'farmer', action: 'crop_case.created', target: 'CASE-2401', details: { crop: 'Tomato' }, timestamp: '2026-11-21T08:24:00.000Z' },
-    { id: 'AUD-002', actorId: 'expert-001', actorRole: 'expert', action: 'crop_case.expert_reviewed', target: 'CASE-2401', details: { reviewStatus: 'in_review' }, timestamp: '2026-11-21T09:10:00.000Z' },
-    { id: 'AUD-003', actorId: 'farmer-001', actorRole: 'farmer', action: 'storage.inspection_added', target: 'batch-02', details: { condition: 'critical' }, timestamp: '2026-11-21T08:00:00.000Z' },
-    { id: 'AUD-004', actorId: 'admin-001', actorRole: 'admin', action: 'mandi.dataset_seeded', target: 'Nashik APMC', details: { count: mandiPrices.length }, timestamp: '2026-11-21T06:00:00.000Z' },
-  ];
-  for (const entry of auditEntries) await repos.audit.put(entry);
+  const existingAudits = await repos.audit.list({ limit: 5 });
+  if (existingAudits.items.length === 0) {
+    const auditEntries: AuditEntry[] = [
+      { id: 'AUD-001', actorId: 'farmer-001', actorRole: 'farmer', action: 'crop_case.created', target: 'CASE-2401', details: { crop: 'Tomato' }, timestamp: '2026-11-21T08:24:00.000Z' },
+      { id: 'AUD-002', actorId: 'expert-001', actorRole: 'expert', action: 'crop_case.expert_reviewed', target: 'CASE-2401', details: { reviewStatus: 'in_review' }, timestamp: '2026-11-21T09:10:00.000Z' },
+      { id: 'AUD-003', actorId: 'farmer-001', actorRole: 'farmer', action: 'storage.inspection_added', target: 'batch-02', details: { condition: 'critical' }, timestamp: '2026-11-21T08:00:00.000Z' },
+      { id: 'AUD-004', actorId: 'admin-001', actorRole: 'admin', action: 'mandi.dataset_seeded', target: 'Nashik APMC', details: { count: mandiPrices.length }, timestamp: '2026-11-21T06:00:00.000Z' },
+    ];
+    for (const entry of auditEntries) await repos.audit.put(entry);
+    inserted += auditEntries.length;
+  }
 
   const directoryProfiles: UserAccount[] = [
     { id: 'farmer-001', name: 'Ramesh Patil', email: 'ramesh@krishi360.in', role: 'farmer', location: 'Nashik, Maharashtra', phone: '+91 98•••••412', status: 'active', joinedAt: '2026-04-12', avatar: 'RP', createdAt: ts, updatedAt: ts, version: 1 },
@@ -578,6 +636,66 @@ export async function seedDemoPortalData(repos: Container['repos']): Promise<voi
   ];
   for (const profile of directoryProfiles) {
     const existing = await repos.users.get(profile.id);
-    if (!existing) await repos.users.create(profile);
+    if (!existing) {
+      await repos.users.create(profile);
+      inserted++;
+    } else {
+      skipped++;
+    }
   }
+
+  const existingNotifs = await repos.workspace.listNotifications({ limit: 5 });
+  if (existingNotifs.items.length === 0) {
+    const seedNotifs: NotificationRecord[] = [
+      {
+        id: 'NOTIF-001',
+        title: 'Storage alert on GB-2402 (Wheat)',
+        body: 'Warehouse A Bay 4 exceeded temperature threshold (30.8°C). Check ventilation.',
+        severity: 'critical',
+        audience: 'farmer',
+        readBy: [],
+        createdAt: '2026-11-21T07:05:00.000Z',
+      },
+      {
+        id: 'NOTIF-002',
+        title: 'New crop case queued for review',
+        body: 'CASE-2402 (Wheat rust symptoms) is awaiting expert verification.',
+        severity: 'warning',
+        audience: 'expert',
+        readBy: [],
+        createdAt: '2026-11-21T15:05:00.000Z',
+      },
+      {
+        id: 'NOTIF-003',
+        title: 'Persistent database active',
+        body: 'All farm, crop, mandi, storage, scheme, and audit records are persisted in the backend database.',
+        severity: 'info',
+        audience: 'all',
+        readBy: [],
+        createdAt: '2026-11-21T06:00:00.000Z',
+      },
+    ];
+    for (const notif of seedNotifs) await repos.workspace.putNotification(notif);
+    inserted += seedNotifs.length;
+  }
+
+  const existingSettings = await repos.workspace.getPlatformSettings();
+  if (!existingSettings) {
+    const defaultSettings: PlatformSettingsRecord = {
+      id: 'global',
+      language: 'English',
+      notificationsEnabled: true,
+      demoMode: true,
+      compactTables: false,
+      expertReviewSlaHours: 24,
+      storageAlertTemp: 28,
+      storageAlertHumidity: 70,
+      updatedAt: ts,
+      version: 1,
+    };
+    await repos.workspace.savePlatformSettings(defaultSettings);
+    inserted++;
+  }
+
+  return { inserted, skipped };
 }

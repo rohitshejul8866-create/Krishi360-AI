@@ -19,10 +19,10 @@ export function ProfilePage() {
 
   if (!user) return null
 
-  const save = (event: FormEvent) => {
+  const save = async (event: FormEvent) => {
     event.preventDefault()
-    updateProfile({ name: name.trim() || user.name, location, phone })
-    show('Profile updated', 'Changes are saved for this demo session.', 'success')
+    await updateProfile({ name: name.trim() || user.name, location: location.trim(), phone: phone.trim() })
+    show('Profile updated', 'Your profile changes have been saved.', 'success')
   }
 
   return (
@@ -69,7 +69,7 @@ export function ProfilePage() {
 
         <Card>
           <CardHeader title="Edit profile" description="Update the details shown in your demo workspace." icon={<UserRound size={18} />} />
-          <form onSubmit={save} className="space-y-5">
+          <form onSubmit={(event) => void save(event)} className="space-y-5">
             <Field label="Full name" required>
               <Input value={name} onChange={(event) => setName(event.target.value)} />
             </Field>

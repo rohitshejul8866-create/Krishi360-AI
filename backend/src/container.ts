@@ -1,7 +1,8 @@
 /**
  * Dependency wiring. Handlers resolve services through this container.
- * Tests and the local dev server inject their own container (in-memory
- * repositories, heuristic AI) via setContainer().
+ * Supports persistent SQLite single-table storage (default locally),
+ * AWS DynamoDB single-table storage (production / configured AWS),
+ * and fast in-memory storage (unit tests).
  */
 
 import { loadConfig, type AppConfig } from './config/env';
@@ -13,6 +14,7 @@ import { DynamoMandiRepository } from './repositories/dynamo/mandiRepo';
 import { DynamoSchemeRepository } from './repositories/dynamo/schemeRepo';
 import { DynamoStorageRepository } from './repositories/dynamo/storageRepo';
 import { DynamoUserRepository } from './repositories/dynamo/userRepo';
+import { DynamoWorkspaceRepository } from './repositories/dynamo/workspaceRepo';
 import {
   MemoryAuditRepository,
   MemoryCropCaseRepository,
@@ -21,7 +23,19 @@ import {
   MemorySchemeRepository,
   MemoryStorageRepository,
   MemoryUserRepository,
+  MemoryWorkspaceRepository,
 } from './repositories/memory';
+import { getSqliteDb } from './repositories/sqlite/client';
+import {
+  SqliteAuditRepository,
+  SqliteCropCaseRepository,
+  SqliteFarmRepository,
+  SqliteMandiRepository,
+  SqliteSchemeRepository,
+  SqliteStorageRepository,
+  SqliteUserRepository,
+  SqliteWorkspaceRepository,
+} from './repositories/sqlite';
 import type {
   AuditRepository,
   CropCaseRepository,
@@ -30,6 +44,7 @@ import type {
   SchemeRepository,
   StorageRepository,
   UserRepository,
+  WorkspaceRepository,
 } from './repositories/types';
 import { createAiService } from './services/ai/factory';
 import { AuditService } from './services/auditService';
@@ -40,6 +55,7 @@ import { JalSenseService } from './services/jalSenseService';
 import { MandiService } from './services/mandiService';
 import { SchemeService } from './services/schemeService';
 import { UploadService } from './services/uploadService';
+import { WorkspaceService } from './services/workspaceService';
 
 export interface Repositories {
   cases: CropCaseRepository;
@@ -49,6 +65,7 @@ export interface Repositories {
   schemes: SchemeRepository;
   audit: AuditRepository;
   users: UserRepository;
+  workspace: WorkspaceRepository;
 }
 
 export interface Container {
@@ -61,6 +78,7 @@ export interface Container {
   jalSense: JalSenseService;
   grainGuard: GrainGuardService;
   schemes: SchemeService;
+  workspace: WorkspaceService;
 }
 
 export function buildRepositories(config: AppConfig): Repositories {
@@ -73,6 +91,20 @@ export function buildRepositories(config: AppConfig): Repositories {
       schemes: new MemorySchemeRepository(),
       audit: new MemoryAuditRepository(),
       users: new MemoryUserRepository(),
+      workspace: new MemoryWorkspaceRepository(),
+    };
+  }
+  if (config.dataBackend === 'sqlite') {
+    const db = getSqliteDb(config.sqliteDbPath);
+    return {
+      cases: new SqliteCropCaseRepository(db),
+      mandi: new SqliteMandiRepository(db),
+      farms: new SqliteFarmRepository(db),
+      storage: new SqliteStorageRepository(db),
+      schemes: new SqliteSchemeRepository(db),
+      audit: new SqliteAuditRepository(db),
+      users: new SqliteUserRepository(db),
+      workspace: new SqliteWorkspaceRepository(db),
     };
   }
   const client = getDocClient(config);
@@ -85,6 +117,7 @@ export function buildRepositories(config: AppConfig): Repositories {
     schemes: new DynamoSchemeRepository(client, table),
     audit: new DynamoAuditRepository(client, table),
     users: new DynamoUserRepository(client, table),
+    workspace: new DynamoWorkspaceRepository(client, table),
   };
 }
 
@@ -102,7 +135,8 @@ export function buildContainer(config: AppConfig, repos: Repositories = buildRep
     mandi: new MandiService(repos.mandi, audit),
     jalSense: new JalSenseService(repos.farms, audit),
     grainGuard: new GrainGuardService(repos.storage, audit),
-    schemes: new SchemeService(repos.schemes),
+    schemes: new SchemeService(repos.schemes, audit),
+    workspace: new WorkspaceService(repos.workspace, audit),
   };
 }
 

@@ -33,6 +33,13 @@ export function buildGrainGuardRoutes(config: AppConfig, container: Container): 
       })),
     },
     {
+      method: 'GET',
+      resource: '/storage-batches/{id}/readings',
+      handler: withHttp({ auth: 'required', params: idParam, query: paginationQuery }, config, async (ctx) => ({
+        data: await svc.listReadings(ctx.user!, ctx.params.id, { limit: ctx.query.limit, cursor: ctx.query.cursor }),
+      })),
+    },
+    {
       method: 'POST',
       resource: '/storage-batches/{id}/readings',
       handler: withHttp(

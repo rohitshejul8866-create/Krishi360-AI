@@ -10,6 +10,7 @@ import {
   farmerLoginSchema,
   farmerRegisterSchema,
   idParam,
+  profileUpdateSchema,
   staffLoginSchema,
 } from '../validators';
 import type { Route } from './router';
@@ -50,6 +51,13 @@ export function buildAuthRoutes(config: AppConfig, container: Container): Route[
           },
         };
       }),
+    },
+    {
+      method: 'PATCH',
+      resource: '/me',
+      handler: withHttp({ auth: 'required', body: profileUpdateSchema }, config, async (ctx) => ({
+        data: await auth.updateOwnProfile(ctx.user!, ctx.body, ctx.logger),
+      })),
     },
     {
       method: 'GET',

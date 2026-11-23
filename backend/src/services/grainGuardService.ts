@@ -192,6 +192,11 @@ export class GrainGuardService {
     return this.repo.listAlerts(batchId, page);
   }
 
+  async listReadings(user: AuthUser, batchId: string, page: PageRequest): Promise<Page<StorageReading>> {
+    await this.getAccessible(user, batchId);
+    return this.repo.listReadings(batchId, page);
+  }
+
   async addInspection(
     user: AuthUser,
     batchId: string,

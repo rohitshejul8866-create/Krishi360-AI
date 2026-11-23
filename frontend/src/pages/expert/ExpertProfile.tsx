@@ -22,10 +22,10 @@ export function ExpertProfile() {
 
   const completed = cases.filter((item) => item.reviewedBy === user.name && item.reviewStatus === 'completed').length
 
-  const save = (event: FormEvent) => {
+  const save = async (event: FormEvent) => {
     event.preventDefault()
-    updateProfile({ name: name.trim() || user.name, location, phone })
-    show('Expert profile updated', 'Saved for this demo session.', 'success')
+    await updateProfile({ name: name.trim() || user.name, location: location.trim(), phone: phone.trim() })
+    show('Expert profile updated', 'Your expert profile changes have been saved.', 'success')
   }
 
   return (
@@ -70,7 +70,7 @@ export function ExpertProfile() {
 
         <Card>
           <CardHeader title="Edit expert details" description="Update your Crop Expert profile details." icon={<UserRound size={18} />} />
-          <form onSubmit={save} className="space-y-5">
+          <form onSubmit={(event) => void save(event)} className="space-y-5">
             <Field label="Full name" required><Input value={name} onChange={(event) => setName(event.target.value)} /></Field>
             <Field label="Email address" hint="Managed by Administrator"><Input value={user.email} disabled /></Field>
             <Field label="Location"><Input value={location} onChange={(event) => setLocation(event.target.value)} /></Field>

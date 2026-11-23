@@ -102,6 +102,17 @@ export const authService = {
     return res.data
   },
 
+  async updateProfile(patch: {
+    name?: string
+    location?: string
+    phone?: string
+    specialisation?: string
+    organisation?: string
+  }): Promise<DemoUser> {
+    const res = await apiClient.patch<DemoUser>('/me', patch)
+    return res.data
+  },
+
   async requestPasswordReset(email: string): Promise<void> {
     if (!email.includes('@')) throw new Error('Enter a valid email address.')
     await apiClient.get('/health')

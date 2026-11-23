@@ -9,8 +9,10 @@
  * - No secrets are read from code; everything comes from the environment.
  */
 
+import path from 'node:path';
+
 export type AuthMode = 'dev' | 'cognito';
-export type DataBackend = 'memory' | 'dynamodb';
+export type DataBackend = 'memory' | 'sqlite' | 'dynamodb';
 export type AiProvider = 'disabled' | 'heuristic' | 'bedrock';
 
 export interface AppConfig {
@@ -18,6 +20,7 @@ export interface AppConfig {
   isLambda: boolean;
   authMode: AuthMode;
   dataBackend: DataBackend;
+  sqliteDbPath: string;
   awsRegion: string;
   tableName: string;
   dynamoEndpoint?: string;
@@ -67,14 +70,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const nodeEnv = env.NODE_ENV ?? (isLambda ? 'production' : 'local');
 
   const authMode = oneOf(env.AUTH_MODE, ['dev', 'cognito'] as const, isLambda ? 'cognito' : 'dev', 'AUTH_MODE');
-  const dataBackend = oneOf(env.DATA_BACKEND, ['memory', 'dynamodb'] as const, isLambda ? 'dynamodb' : 'memory', 'DATA_BACKEND');
+  const dataBackend = oneOf(
+    env.DATA_BACKEND,
+    ['memory', 'sqlite', 'dynamodb'] as const,
+    isLambda ? 'dynamodb' : 'sqlite',
+    'DATA_BACKEND',
+  );
   const aiProvider = oneOf(env.AI_PROVIDER, ['disabled', 'heuristic', 'bedrock'] as const, 'disabled', 'AI_PROVIDER');
 
   // Dev-only escape hatches must never be usable in a deployed Lambda.
-  if (isLambda && (authMode === 'dev' || dataBackend === 'memory' || aiProvider === 'heuristic')) {
+  if (isLambda && (authMode === 'dev' || dataBackend !== 'dynamodb' || aiProvider === 'heuristic')) {
     throw new Error('Refusing to start: dev-only AUTH_MODE/DATA_BACKEND/AI_PROVIDER cannot be used inside AWS Lambda.');
   }
 
+  const sqliteDbPath = path.resolve(process.cwd(), env.SQLITE_DB_PATH?.trim() || '.data/krishi360.db');
   const awsRegion = env.AWS_REGION || 'ap-south-1';
   const dynamoEndpoint = optionalHttpUrl(env.DYNAMODB_ENDPOINT, 'DYNAMODB_ENDPOINT');
   const awsCredentialsConfigured =
@@ -101,6 +110,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     isLambda,
     authMode,
     dataBackend,
+    sqliteDbPath,
     awsRegion,
     tableName: env.DYNAMODB_TABLE_NAME || 'krishi360-dev',
     dynamoEndpoint,

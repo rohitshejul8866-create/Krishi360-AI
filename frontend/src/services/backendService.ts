@@ -7,6 +7,8 @@ export type BackendEntityName =
   | 'storageBatches'
   | 'farms'
   | 'auditLogs'
+  | 'users'
+  | 'notifications'
 
 export type TableState =
   | 'ACTIVE'
@@ -25,8 +27,19 @@ export interface DynamoTableInspection {
   message: string
 }
 
+export interface SqliteInspection {
+  dbPath: string
+  exists: boolean
+  journalMode: string
+  integrityOk: boolean
+  fileSizeBytes: number
+  totalItems: number
+  indexCount: number
+  message: string
+}
+
 export interface BackendEndpointInfo {
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH'
   path: string
   module: string
   auth: 'Public' | 'Authenticated' | 'Expert / Admin' | 'Admin only'
@@ -35,7 +48,7 @@ export interface BackendEndpointInfo {
 
 export interface BackendStatusSnapshot {
   service: string
-  dataBackend: 'memory' | 'dynamodb'
+  dataBackend: 'memory' | 'sqlite' | 'dynamodb'
   awsRegion: string
   tableName: string
   customEndpointConfigured: boolean
@@ -44,6 +57,7 @@ export interface BackendStatusSnapshot {
   aiProvider: 'disabled' | 'heuristic' | 'bedrock'
   authMode: 'dev' | 'cognito'
   dynamo: DynamoTableInspection
+  sqlite?: SqliteInspection
   counts: Record<BackendEntityName, number>
   singleTableSchema: Array<{
     entity: string
@@ -54,6 +68,7 @@ export interface BackendStatusSnapshot {
   }>
   endpoints: BackendEndpointInfo[]
   checkedAt: string
+  seedResult?: { inserted: number; skipped: number }
 }
 
 export interface BackendRecordsPage {
@@ -67,17 +82,27 @@ export const backendService = {
     return res.data
   },
 
+  async healthCheck(): Promise<BackendStatusSnapshot> {
+    const res = await apiClient.post<BackendStatusSnapshot>('/backend/health-check')
+    return res.data
+  },
+
+  async exportSnapshot(): Promise<Record<string, unknown>> {
+    const res = await apiClient.get<Record<string, unknown>>('/backend/export')
+    return res.data
+  },
+
   async ensureTable(): Promise<BackendStatusSnapshot> {
     const res = await apiClient.post<BackendStatusSnapshot>('/backend/ensure-table')
     return res.data
   },
 
-  async seedDatabase(): Promise<BackendStatusSnapshot> {
-    const res = await apiClient.post<BackendStatusSnapshot>('/backend/seed')
+  async seedDatabase(mode: 'missing' | 'reset' = 'missing'): Promise<BackendStatusSnapshot> {
+    const res = await apiClient.post<BackendStatusSnapshot>('/backend/seed', { mode })
     return res.data
   },
 
-  async listRecords(entity: BackendEntityName, limit = 15): Promise<BackendRecordsPage> {
+  async listRecords(entity: BackendEntityName, limit = 25): Promise<BackendRecordsPage> {
     const res = await apiClient.get<BackendRecordsPage>(
       `/backend/records?entity=${encodeURIComponent(entity)}&limit=${limit}`,
     )

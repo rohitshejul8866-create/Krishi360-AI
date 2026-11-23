@@ -66,4 +66,20 @@ export const apiClient = {
       authUser,
     })
   },
+
+  async put<T>(path: string, body?: unknown, authUser?: DevAuthOverride | null): Promise<ApiEnvelope<T>> {
+    return this.request<T>(path, {
+      method: 'PUT',
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      authUser,
+    })
+  },
+
+  async patch<T>(path: string, body?: unknown, authUser?: DevAuthOverride | null): Promise<ApiEnvelope<T>> {
+    return this.request<T>(path, {
+      method: 'PATCH',
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      authUser,
+    })
+  },
 }

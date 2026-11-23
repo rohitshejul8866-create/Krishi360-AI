@@ -1,18 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Droplets, MapPin, Pencil, Plus, Sprout } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
-import { DemoNote } from '../../components/common/DemoNote'
-import { Card, CardHeader } from '../../components/ui/Card'
+import { StatCard } from '../../components/common/StatCard'
 import { Badge, StatusPill } from '../../components/ui/Badge'
-import { Progress } from '../../components/ui/Progress'
 import { Button } from '../../components/ui/Button'
+import { Card, CardHeader } from '../../components/ui/Card'
 import { Field, Input, Select } from '../../components/ui/Input'
 import { Modal } from '../../components/ui/Modal'
-import { StatCard } from '../../components/common/StatCard'
+import { Progress } from '../../components/ui/Progress'
 import { useToast } from '../../context/ToastContext'
-import { DEMO_FARM } from '../../data/farmers'
 import { CROP_NAMES, GROWTH_STAGES } from '../../data/crops'
+import { DEMO_FARM } from '../../data/farmers'
+import { useApp } from '../../services/store'
 import type { Plot } from '../../types'
 
 const emptyPlot: Plot = {
@@ -27,10 +27,32 @@ const emptyPlot: Plot = {
 }
 
 export function MyFarm() {
-  const [plots, setPlots] = useState<Plot[]>(() => DEMO_FARM.plots.map((plot) => ({ ...plot })))
+  const { farms, updateFarmPlots, backendConnected } = useApp()
+  const activeFarm = farms[0]
+  const farmMeta = activeFarm ?? DEMO_FARM
+
+  const mapBackendPlots = (): Plot[] =>
+    (activeFarm?.plots ?? DEMO_FARM.plots).map((plot) => ({
+      id: plot.id,
+      name: plot.name,
+      areaHa: plot.areaHa,
+      crop: plot.crop,
+      growthStage: plot.growthStage,
+      soilMoisture: plot.soilMoisture ?? 34,
+      lastIrrigated: plot.lastIrrigated ?? new Date().toISOString().slice(0, 10),
+      status: plot.status ?? 'healthy',
+    }))
+
+  const [plots, setPlots] = useState<Plot[]>(mapBackendPlots)
   const [editing, setEditing] = useState<Plot | null>(null)
   const [modalOpen, setModalOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
   const { show } = useToast()
+
+  useEffect(() => {
+    setPlots(mapBackendPlots())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeFarm?.id, activeFarm?.plots])
 
   const openNew = () => {
     setEditing({ ...emptyPlot, id: `plot-${Date.now()}` })
@@ -42,16 +64,36 @@ export function MyFarm() {
     setModalOpen(true)
   }
 
-  const save = (event: FormEvent) => {
+  const save = async (event: FormEvent) => {
     event.preventDefault()
     if (!editing || !editing.name.trim()) {
       show('Plot name required', 'Add a name before saving.', 'warning')
       return
     }
     const exists = plots.some((plot) => plot.id === editing.id)
-    setPlots((current) => (exists ? current.map((plot) => (plot.id === editing.id ? editing : plot)) : [editing, ...current]))
+    const nextPlots = exists
+      ? plots.map((plot) => (plot.id === editing.id ? editing : plot))
+      : [editing, ...plots]
+    setPlots(nextPlots)
+
+    if (activeFarm) {
+      setSaving(true)
+      try {
+        await updateFarmPlots(activeFarm.id, nextPlots)
+        show(exists ? 'Plot updated' : 'Plot added', `${editing.name} persisted to the farm database.`, 'success')
+      } catch (err) {
+        show(
+          'Saved locally',
+          err instanceof Error ? err.message : 'Unable to sync farm update to server.',
+          'warning',
+        )
+      } finally {
+        setSaving(false)
+      }
+    } else {
+      show(exists ? 'Plot updated' : 'Plot added', `${editing.name} saved in this session.`, 'success')
+    }
     setModalOpen(false)
-    show(exists ? 'Plot updated' : 'Plot added', `${editing.name} saved in this demo session.`, 'success')
   }
 
   const totalArea = plots.reduce((sum, plot) => sum + plot.areaHa, 0)
@@ -61,16 +103,16 @@ export function MyFarm() {
       <PageHeader
         eyebrow="Farm records"
         title="My Farm"
-        description="Review plots, soil context and crop stages. Edits are stored only for this demo session."
-        badge={<DemoNote label="Sample farm record" />}
+        description="Review plots, soil context and crop stages persisted in the KRISHI360 backend database."
+        badge={<Badge tone={backendConnected && activeFarm ? 'forest' : 'sage'}>{activeFarm ? 'Synced farm record' : 'Sample farm record'}</Badge>}
         actions={<Button onClick={openNew}><Plus size={16} /> Add plot</Button>}
       />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Farm name" value={DEMO_FARM.name} detail={DEMO_FARM.location} icon={<MapPin size={18} />} />
+        <StatCard label="Farm name" value={farmMeta.name} detail={farmMeta.location} icon={<MapPin size={18} />} />
         <StatCard label="Total area" value={`${totalArea.toFixed(1)} ha`} detail={`${plots.length} plots`} icon={<Sprout size={18} />} tone="forest" />
-        <StatCard label="Soil type" value={DEMO_FARM.soilType} detail="Sample record" icon={<Droplets size={18} />} />
-        <StatCard label="Irrigation" value={DEMO_FARM.irrigationType} detail="Configured in demo" icon={<Droplets size={18} />} />
+        <StatCard label="Soil type" value={farmMeta.soilType} detail="Persisted record" icon={<Droplets size={18} />} />
+        <StatCard label="Irrigation" value={farmMeta.irrigationType} detail="Active configuration" icon={<Droplets size={18} />} />
       </div>
 
       <div className="mt-6 grid gap-5 lg:grid-cols-2">
@@ -94,7 +136,7 @@ export function MyFarm() {
                 </div>
                 <p className="mt-2 text-2xl font-extrabold text-ink">{plot.soilMoisture}%</p>
                 <div className="mt-3"><Progress value={plot.soilMoisture} /></div>
-                <p className="mt-2 text-[10px] text-muted">Simulated reading</p>
+                <p className="mt-2 text-[10px] text-muted">Simulated / sensor reading</p>
               </div>
               <div className="rounded-2xl border border-line/70 p-4">
                 <p className="text-[11px] font-extrabold tracking-wide text-muted uppercase">Last irrigation</p>
@@ -108,12 +150,12 @@ export function MyFarm() {
       </div>
 
       <Card className="mt-6">
-        <CardHeader title="Farm context" description="Information used by the demo recommendation engines." icon={<MapPin size={18} />} />
+        <CardHeader title="Farm context" description="Information used by the irrigation recommendation engine." icon={<MapPin size={18} />} />
         <div className="grid gap-3 sm:grid-cols-3">
           {[
-            { label: 'Location', value: DEMO_FARM.location },
-            { label: 'Soil type', value: DEMO_FARM.soilType },
-            { label: 'Irrigation method', value: DEMO_FARM.irrigationType },
+            { label: 'Location', value: farmMeta.location },
+            { label: 'Soil type', value: farmMeta.soilType },
+            { label: 'Irrigation method', value: farmMeta.irrigationType },
           ].map((item) => (
             <div key={item.label} className="rounded-2xl bg-soft-sage/40 p-4">
               <p className="text-[10px] font-extrabold tracking-wide text-muted uppercase">{item.label}</p>
@@ -127,16 +169,16 @@ export function MyFarm() {
         open={modalOpen}
         onClose={() => setModalOpen(false)}
         title={plots.some((plot) => plot.id === editing?.id) ? 'Edit plot' : 'Add a plot'}
-        description="Update the sample plot details used across your demo workspace."
+        description="Update plot details and persist changes to your farm record."
         footer={
           <>
             <Button variant="ghost" onClick={() => setModalOpen(false)}>Cancel</Button>
-            <Button type="submit" form="plot-form">Save plot</Button>
+            <Button type="submit" form="plot-form" disabled={saving}>{saving ? 'Saving…' : 'Save plot'}</Button>
           </>
         }
       >
         {editing ? (
-          <form id="plot-form" onSubmit={save} className="space-y-4">
+          <form id="plot-form" onSubmit={(e) => void save(e)} className="space-y-4">
             <Field label="Plot name" required>
               <Input value={editing.name} onChange={(event) => setEditing({ ...editing, name: event.target.value })} />
             </Field>
@@ -158,7 +200,7 @@ export function MyFarm() {
                 ]} />
               </Field>
             </div>
-            <Field label="Simulated soil moisture (%)">
+            <Field label="Soil moisture (%)">
               <Input type="number" min="0" max="100" value={editing.soilMoisture} onChange={(event) => setEditing({ ...editing, soilMoisture: Number(event.target.value) })} />
             </Field>
           </form>

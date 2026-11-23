@@ -50,6 +50,14 @@ export class DynamoStorageRepository implements StorageRepository {
     return putItem(this.client, this.table, { pk: `BATCH#${r.batchId}`, sk: `READING#${r.createdAt}#${r.id}` }, r);
   }
 
+  listReadings(batchId: string, page: PageRequest): Promise<Page<StorageReading>> {
+    return queryPage<StorageReading>(this.client, this.table, {
+      keyCondition: 'pk = :batch AND begins_with(sk, :prefix)',
+      names: {},
+      values: { ':batch': `BATCH#${batchId}`, ':prefix': 'READING#' },
+    }, page);
+  }
+
   addAlert(a: StorageAlert): Promise<void> {
     return putItem(this.client, this.table, { pk: `BATCH#${a.batchId}`, sk: `ALERT#${a.createdAt}#${a.id}` }, a);
   }

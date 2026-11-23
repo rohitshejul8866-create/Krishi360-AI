@@ -15,6 +15,7 @@ import type { MandiPrice } from '../../models/mandi';
 import type { Scheme } from '../../models/scheme';
 import type { Inspection, StorageAlert, StorageBatch, StorageReading } from '../../models/storage';
 import type { UserAccount } from '../../models/user';
+import type { NotificationRecord, PlatformSettingsRecord, UserWorkspaceState } from '../../models/workspace';
 import { ConflictError } from '../../utils/errors';
 import { decodeCursor, encodeCursor, type Page, type PageRequest } from '../../utils/pagination';
 import type {
@@ -27,6 +28,7 @@ import type {
   SchemeRepository,
   StorageRepository,
   UserRepository,
+  WorkspaceRepository,
 } from '../types';
 
 function paginate<T>(sorted: T[], page: PageRequest): Page<T> {
@@ -157,6 +159,9 @@ export class MemoryStorageRepository implements StorageRepository {
   async addReading(reading: StorageReading): Promise<void> {
     this.readings.push(structuredClone(reading));
   }
+  async listReadings(batchId: string, page: PageRequest): Promise<Page<StorageReading>> {
+    return paginate(this.readings.filter((r) => r.batchId === batchId).sort(byNewest), page);
+  }
   async addAlert(alert: StorageAlert): Promise<void> {
     this.alerts.push(structuredClone(alert));
   }
@@ -230,5 +235,31 @@ export class MemoryUserRepository implements UserRepository {
   async list(page: PageRequest, role?: Role): Promise<Page<UserAccount>> {
     const all = [...this.users.values()].filter((u) => !role || u.role === role);
     return paginate(all.sort(byNewest), page);
+  }
+}
+
+export class MemoryWorkspaceRepository implements WorkspaceRepository {
+  readonly workspaces = new Map<string, UserWorkspaceState>();
+  readonly notifications = new Map<string, NotificationRecord>();
+  platformSettings: PlatformSettingsRecord | null = null;
+
+  async getUserWorkspace(userId: string): Promise<UserWorkspaceState | null> {
+    const found = this.workspaces.get(userId);
+    return found ? structuredClone(found) : null;
+  }
+  async saveUserWorkspace(state: UserWorkspaceState): Promise<void> {
+    this.workspaces.set(state.userId, structuredClone(state));
+  }
+  async listNotifications(page: PageRequest): Promise<Page<NotificationRecord>> {
+    return paginate([...this.notifications.values()].sort(byNewest), page);
+  }
+  async putNotification(item: NotificationRecord): Promise<void> {
+    this.notifications.set(item.id, structuredClone(item));
+  }
+  async getPlatformSettings(): Promise<PlatformSettingsRecord | null> {
+    return this.platformSettings ? structuredClone(this.platformSettings) : null;
+  }
+  async savePlatformSettings(settings: PlatformSettingsRecord): Promise<void> {
+    this.platformSettings = structuredClone(settings);
   }
 }
