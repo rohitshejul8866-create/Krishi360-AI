@@ -1,0 +1,309 @@
+import {
+  CreateTableCommand,
+  DescribeTableCommand,
+  ResourceNotFoundException,
+  waitUntilTableExists,
+} from '@aws-sdk/client-dynamodb';
+import type { AppConfig } from '../config/env';
+import type { Container, Repositories } from '../container';
+import type { AuthUser } from '../middleware/auth';
+import { getBaseDynamoClient } from '../repositories/dynamo/client';
+import { seedDemoPortalData } from '../seed/demoPortalSeed';
+import { ServiceUnavailableError, ValidationError } from '../utils/errors';
+import type { Logger } from '../utils/logger';
+
+export type TableState = 'ACTIVE' | 'CREATING' | 'UPDATING' | 'NOT_FOUND' | 'NOT_CONFIGURED' | 'UNREACHABLE';
+
+export type BackendEntityName =
+  | 'cropCases'
+  | 'mandiPrices'
+  | 'schemes'
+  | 'storageBatches'
+  | 'farms'
+  | 'auditLogs';
+
+export interface DynamoTableInspection {
+  reachable: boolean;
+  tableStatus: TableState;
+  billingMode: string | null;
+  approximateItemCount: number | null;
+  gsiNames: string[];
+  message: string;
+}
+
+export interface BackendEndpointInfo {
+  method: 'GET' | 'POST';
+  path: string;
+  module: string;
+  auth: 'Public' | 'Authenticated' | 'Expert / Admin' | 'Admin only';
+  description: string;
+}
+
+export interface BackendStatusSnapshot {
+  service: string;
+  dataBackend: 'memory' | 'dynamodb';
+  awsRegion: string;
+  tableName: string;
+  customEndpointConfigured: boolean;
+  awsCredentialsConfigured: boolean;
+  s3UploadsConfigured: boolean;
+  aiProvider: AppConfig['aiProvider'];
+  authMode: AppConfig['authMode'];
+  dynamo: DynamoTableInspection;
+  counts: Record<BackendEntityName, number>;
+  singleTableSchema: Array<{
+    entity: string;
+    pkPattern: string;
+    skPattern: string;
+    gsi1: string;
+    gsi2: string;
+  }>;
+  endpoints: BackendEndpointInfo[];
+  checkedAt: string;
+}
+
+const SINGLE_TABLE_SCHEMA: BackendStatusSnapshot['singleTableSchema'] = [
+  { entity: 'UserAccount', pkPattern: 'USER#<id>', skPattern: 'META', gsi1: 'EMAIL#<email>', gsi2: 'ROLE#<role>' },
+  { entity: 'CropCase', pkPattern: 'CASE#<id>', skPattern: 'META', gsi1: 'FARMER#<farmerId>', gsi2: 'EXPERTQUEUE' },
+  { entity: 'MandiPrice', pkPattern: 'PRICE#<id>', skPattern: 'META', gsi1: 'CROP#<crop>', gsi2: 'STATE#<state>' },
+  { entity: 'Scheme', pkPattern: 'SCHEME#<id>', skPattern: 'META', gsi1: 'CATEGORY#<cat>', gsi2: '—' },
+  { entity: 'Farm & Plots', pkPattern: 'FARM#<id>', skPattern: 'META', gsi1: 'FARMER#<farmerId>', gsi2: '—' },
+  { entity: 'SoilReading', pkPattern: 'FARM#<farmId>', skPattern: 'READING#<ts>#<id>', gsi1: '—', gsi2: '—' },
+  { entity: 'StorageBatch', pkPattern: 'BATCH#<id>', skPattern: 'META', gsi1: 'FARMER#<ownerId>', gsi2: '—' },
+  { entity: 'Inspection / Alert', pkPattern: 'BATCH#<batchId>', skPattern: 'INSPECTION# | ALERT#', gsi1: '—', gsi2: '—' },
+  { entity: 'AuditEntry', pkPattern: 'AUDIT#<YYYY-MM-DD>', skPattern: '<ts>#<id>', gsi1: 'ACTOR#<actorId>', gsi2: '—' },
+];
+
+const API_ENDPOINTS: BackendEndpointInfo[] = [
+  { method: 'GET', path: '/api/health', module: 'Platform', auth: 'Public', description: 'Service heartbeat & active backend mode' },
+  { method: 'GET', path: '/api/me', module: 'Auth', auth: 'Authenticated', description: 'Active caller identity & role claims' },
+  { method: 'GET', path: '/api/backend/status', module: 'AWS Backend', auth: 'Admin only', description: 'DynamoDB table health, counts & runtime readiness' },
+  { method: 'GET', path: '/api/backend/records?entity=cropCases', module: 'AWS Backend', auth: 'Admin only', description: 'Inspect live records from active DB repository' },
+  { method: 'POST', path: '/api/backend/ensure-table', module: 'AWS Backend', auth: 'Admin only', description: 'Verify or provision DynamoDB single-table & GSIs' },
+  { method: 'POST', path: '/api/backend/seed', module: 'AWS Backend', auth: 'Admin only', description: 'Seed demo dataset into active repository' },
+  { method: 'GET', path: '/api/crop-cases?limit=25', module: 'CropDoctor AI', auth: 'Authenticated', description: 'Role-scoped crop diagnosis cases' },
+  { method: 'GET', path: '/api/mandi/prices?limit=25', module: 'MandiSmart', auth: 'Authenticated', description: 'Query agricultural mandi market prices' },
+  { method: 'GET', path: '/api/farms?limit=20', module: 'JalSense', auth: 'Authenticated', description: 'Fetch farms & plot irrigation state' },
+  { method: 'GET', path: '/api/storage-batches?limit=25', module: 'GrainGuard', auth: 'Authenticated', description: 'Storage batch telemetry & threshold status' },
+  { method: 'GET', path: '/api/schemes?limit=25', module: 'SchemeSaathi', auth: 'Authenticated', description: 'Government schemes & eligibility catalog' },
+  { method: 'GET', path: '/api/audit-logs?limit=25', module: 'Governance', auth: 'Admin only', description: 'Immutable mutation & review audit trail' },
+];
+
+function sanitizeAwsFailure(err: unknown): string {
+  const name = err instanceof Error ? err.name : 'UnknownError';
+  if (name === 'CredentialsProviderError' || name === 'UnrecognizedClientException') {
+    return 'AWS credentials are missing or invalid in server environment Secrets.';
+  }
+  if (name === 'AccessDeniedException') {
+    return 'Configured AWS IAM principal lacks DynamoDB DescribeTable/CreateTable permissions.';
+  }
+  if (name === 'TimeoutError' || name === 'NetworkingError') {
+    return 'Unable to reach AWS DynamoDB endpoint from server.';
+  }
+  return `DynamoDB check returned ${name}.`;
+}
+
+export async function inspectDynamoTable(config: AppConfig): Promise<DynamoTableInspection> {
+  if (!config.awsCredentialsConfigured) {
+    return {
+      reachable: false,
+      tableStatus: 'NOT_CONFIGURED',
+      billingMode: null,
+      approximateItemCount: null,
+      gsiNames: ['gsi1', 'gsi2'],
+      message:
+        config.dataBackend === 'dynamodb'
+          ? 'DATA_BACKEND=dynamodb is enabled, but AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not set.'
+          : 'Running on local in-memory store. Set AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and DATA_BACKEND=dynamodb in Secrets to connect AWS DynamoDB.',
+    };
+  }
+
+  try {
+    const client = getBaseDynamoClient(config);
+    const res = await client.send(new DescribeTableCommand({ TableName: config.tableName }));
+    const table = res.Table;
+    const rawStatus = table?.TableStatus;
+    const tableStatus: TableState =
+      rawStatus === 'ACTIVE'
+        ? 'ACTIVE'
+        : rawStatus === 'CREATING'
+          ? 'CREATING'
+          : rawStatus === 'UPDATING'
+            ? 'UPDATING'
+            : 'UNREACHABLE';
+    return {
+      reachable: true,
+      tableStatus,
+      billingMode: table?.BillingModeSummary?.BillingMode ?? 'PAY_PER_REQUEST',
+      approximateItemCount: table?.ItemCount ?? 0,
+      gsiNames: (table?.GlobalSecondaryIndexes ?? []).map((g) => g.IndexName ?? '').filter(Boolean),
+      message: `Connected to DynamoDB table "${config.tableName}" (${tableStatus}) in ${config.awsRegion}.`,
+    };
+  } catch (err) {
+    if (err instanceof ResourceNotFoundException) {
+      return {
+        reachable: true,
+        tableStatus: 'NOT_FOUND',
+        billingMode: null,
+        approximateItemCount: null,
+        gsiNames: [],
+        message: `AWS credentials reachable in ${config.awsRegion}, but table "${config.tableName}" does not exist yet.`,
+      };
+    }
+    return {
+      reachable: false,
+      tableStatus: 'UNREACHABLE',
+      billingMode: null,
+      approximateItemCount: null,
+      gsiNames: [],
+      message: sanitizeAwsFailure(err),
+    };
+  }
+}
+
+export async function ensureDynamoTable(config: AppConfig): Promise<DynamoTableInspection> {
+  if (!config.awsCredentialsConfigured) {
+    throw new ValidationError(
+      'AWS credentials are not configured in server environment Secrets (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).',
+    );
+  }
+
+  const current = await inspectDynamoTable(config);
+  if (current.tableStatus === 'ACTIVE') return current;
+
+  const client = getBaseDynamoClient(config);
+  if (current.tableStatus === 'NOT_FOUND') {
+    try {
+      await client.send(
+        new CreateTableCommand({
+          TableName: config.tableName,
+          BillingMode: 'PAY_PER_REQUEST',
+          AttributeDefinitions: [
+            { AttributeName: 'pk', AttributeType: 'S' },
+            { AttributeName: 'sk', AttributeType: 'S' },
+            { AttributeName: 'gsi1pk', AttributeType: 'S' },
+            { AttributeName: 'gsi1sk', AttributeType: 'S' },
+            { AttributeName: 'gsi2pk', AttributeType: 'S' },
+            { AttributeName: 'gsi2sk', AttributeType: 'S' },
+          ],
+          KeySchema: [
+            { AttributeName: 'pk', KeyType: 'HASH' },
+            { AttributeName: 'sk', KeyType: 'RANGE' },
+          ],
+          GlobalSecondaryIndexes: [
+            {
+              IndexName: 'gsi1',
+              KeySchema: [
+                { AttributeName: 'gsi1pk', KeyType: 'HASH' },
+                { AttributeName: 'gsi1sk', KeyType: 'RANGE' },
+              ],
+              Projection: { ProjectionType: 'ALL' },
+            },
+            {
+              IndexName: 'gsi2',
+              KeySchema: [
+                { AttributeName: 'gsi2pk', KeyType: 'HASH' },
+                { AttributeName: 'gsi2sk', KeyType: 'RANGE' },
+              ],
+              Projection: { ProjectionType: 'ALL' },
+            },
+          ],
+        }),
+      );
+      await waitUntilTableExists(
+        { client, maxWaitTime: 20, minDelay: 1, maxDelay: 3 },
+        { TableName: config.tableName },
+      );
+    } catch (err) {
+      throw new ServiceUnavailableError('DYNAMODB_PROVISION_FAILED', sanitizeAwsFailure(err));
+    }
+  } else if (!current.reachable) {
+    throw new ServiceUnavailableError('DYNAMODB_UNREACHABLE', current.message);
+  }
+
+  return inspectDynamoTable(config);
+}
+
+async function countAllEntities(repos: Repositories): Promise<Record<BackendEntityName, number>> {
+  const page = { limit: 100 };
+  const [cases, mandi, schemes, storage, farms, audit] = await Promise.all([
+    repos.cases.listAll(page).catch(() => ({ items: [] })),
+    repos.mandi.query({}, page).catch(() => ({ items: [] })),
+    repos.schemes.list({}, page).catch(() => ({ items: [] })),
+    repos.storage.listAll(page).catch(() => ({ items: [] })),
+    repos.farms.listAll(page).catch(() => ({ items: [] })),
+    repos.audit.list(page).catch(() => ({ items: [] })),
+  ]);
+  return {
+    cropCases: cases.items.length,
+    mandiPrices: mandi.items.length,
+    schemes: schemes.items.length,
+    storageBatches: storage.items.length,
+    farms: farms.items.length,
+    auditLogs: audit.items.length,
+  };
+}
+
+export async function getBackendStatus(config: AppConfig, container: Container): Promise<BackendStatusSnapshot> {
+  const [dynamo, counts] = await Promise.all([
+    inspectDynamoTable(config),
+    countAllEntities(container.repos),
+  ]);
+
+  return {
+    service: 'krishi360-ai-backend',
+    dataBackend: config.dataBackend,
+    awsRegion: config.awsRegion,
+    tableName: config.tableName,
+    customEndpointConfigured: Boolean(config.dynamoEndpoint),
+    awsCredentialsConfigured: config.awsCredentialsConfigured,
+    s3UploadsConfigured: Boolean(config.uploadBucketName),
+    aiProvider: config.aiProvider,
+    authMode: config.authMode,
+    dynamo,
+    counts,
+    singleTableSchema: SINGLE_TABLE_SCHEMA,
+    endpoints: API_ENDPOINTS,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+export async function seedActiveDatabase(
+  config: AppConfig,
+  container: Container,
+  actor: AuthUser,
+  logger: Logger,
+): Promise<BackendStatusSnapshot> {
+  if (config.dataBackend === 'dynamodb') {
+    await ensureDynamoTable(config);
+  }
+  await seedDemoPortalData(container.repos);
+  await container.audit.record(logger, actor, 'backend.database_seeded', config.tableName, {
+    dataBackend: config.dataBackend,
+    awsRegion: config.awsRegion,
+  });
+  return getBackendStatus(config, container);
+}
+
+export async function listBackendRecords(
+  repos: Repositories,
+  entity: BackendEntityName,
+  limit: number,
+  cursor?: string,
+) {
+  const page = { limit, cursor };
+  switch (entity) {
+    case 'cropCases':
+      return repos.cases.listAll(page);
+    case 'mandiPrices':
+      return repos.mandi.query({}, page);
+    case 'schemes':
+      return repos.schemes.list({}, page);
+    case 'storageBatches':
+      return repos.storage.listAll(page);
+    case 'farms':
+      return repos.farms.listAll(page);
+    case 'auditLogs':
+      return repos.audit.list(page);
+  }
+}

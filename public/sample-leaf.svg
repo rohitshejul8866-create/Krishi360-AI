@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600" width="800" height="600">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7F5EF"/>
+      <stop offset="1" stop-color="#E6EBDD"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0.1" y1="0.1" x2="0.9" y2="0.9">
+      <stop offset="0" stop-color="#7E9A63"/>
+      <stop offset="0.55" stop-color="#5F7D4B"/>
+      <stop offset="1" stop-color="#3F5C38"/>
+    </linearGradient>
+    <radialGradient id="spot" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#8E5B32" stop-opacity=".92"/>
+      <stop offset="0.6" stop-color="#A8793E" stop-opacity=".66"/>
+      <stop offset="1" stop-color="#C2A264" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
+  </defs>
+  <rect width="800" height="600" fill="url(#bg)"/>
+  <ellipse cx="410" cy="520" rx="250" ry="34" fill="#344B35" opacity=".08" filter="url(#soft)"/>
+  <g transform="translate(96 44) rotate(-6 300 250)">
+    <path d="M70 470C94 258 210 110 500 62c34 250-72 414-306 424-42 2-84 4-124-16Z" fill="url(#leaf)"/>
+    <path d="M70 470C170 356 290 246 500 62" stroke="#DCE7C9" stroke-width="7" stroke-linecap="round" fill="none" opacity=".72"/>
+    <g stroke="#C8D8B2" stroke-width="3" opacity=".45" fill="none">
+      <path d="M190 370c40-8 76-30 108-66"/>
+      <path d="M246 302c44-10 82-34 116-72"/>
+      <path d="M300 240c46-14 86-40 122-78"/>
+      <path d="M150 414c34-4 66-18 96-44"/>
+      <path d="M220 350c-12 38-16 76-10 112"/>
+      <path d="M300 286c-10 42-12 84-4 124"/>
+      <path d="M374 220c-8 40-8 80 2 118"/>
+    </g>
+    <g fill="url(#spot)">
+      <ellipse cx="286" cy="300" rx="42" ry="30" transform="rotate(-18 286 300)"/>
+      <ellipse cx="372" cy="236" rx="30" ry="23" transform="rotate(12 372 236)"/>
+      <ellipse cx="224" cy="374" rx="26" ry="20" transform="rotate(-26 224 374)"/>
+      <ellipse cx="420" cy="318" rx="22" ry="17" transform="rotate(24 420 318)"/>
+      <ellipse cx="330" cy="390" rx="18" ry="14"/>
+    </g>
+    <g fill="#3D2B1C" opacity=".5">
+      <circle cx="286" cy="300" r="5"/>
+      <circle cx="372" cy="236" r="4"/>
+      <circle cx="224" cy="374" r="4"/>
+    </g>
+  </g>
+  <rect x="24" y="24" width="752" height="552" rx="28" fill="none" stroke="#fff" stroke-opacity=".65" stroke-width="2"/>
+</svg>

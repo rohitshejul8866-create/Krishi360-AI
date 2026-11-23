@@ -1,0 +1,6 @@
+{
+  "name": "KRISHI360 AI",
+  "description": "Seed to sale agricultural intelligence platform connecting crop health, irrigation, storage, market intelligence, and government support.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
