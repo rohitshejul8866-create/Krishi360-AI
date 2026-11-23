@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import type { APIGatewayProxyEvent } from 'aws-lambda';
+import { GoogleGenAI } from '@google/genai';
 import express from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -113,6 +114,72 @@ async function startServer() {
   const app = express();
   app.disable('x-powered-by');
   const httpServer = http.createServer(app);
+  app.post('/api/ai/live-intelligence', express.json(), async (req, res) => {
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(500).json({ error: 'Gemini API key not configured' });
+      }
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      });
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: 'Provide a real-time agricultural market and weather intelligence brief for farmers in Maharashtra (Nashik region) covering tomato, wheat, onion, and grapes prices, weather forecast, and pest/disease alerts.',
+        config: {
+          systemInstruction: 'You are KRISHI360 AI, an advanced agricultural market and meteorological analyst. Return JSON with keys: summary, mandiUpdates (array of object with crop, priceRange, trend), weatherBrief, pestAlert, and sources (array of strings).',
+          tools: [{ googleSearch: {} }],
+          responseMimeType: 'application/json',
+        }
+      });
+
+      let data;
+      try {
+        data = JSON.parse(response.text || '{}');
+      } catch {
+        data = { summary: response.text, mandiUpdates: [], weatherBrief: 'Normal conditions', pestAlert: 'None', sources: [] };
+      }
+
+      res.json({ data, groundingMetadata: response.candidates?.[0]?.groundingMetadata ?? null });
+    } catch (err: any) {
+      console.error('Live intelligence error:', err);
+      res.status(500).json({ error: err.message || 'AI service error' });
+    }
+  });
+
+  app.post('/api/ai/chat', express.json(), async (req, res) => {
+    try {
+      const { message } = req.body;
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(500).json({ error: 'Gemini API key not configured' });
+      }
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
+      });
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-4-hydrogen',
+        contents: message || 'Help me with farm management and crop health.',
+        config: {
+          systemInstruction: 'You are KRISHI360 AI, an expert agricultural intelligence advisor connecting crop health, irrigation, storage, market intelligence, and government schemes for farmers in India. Provide concise, expert, practical farming advice.',
+          tools: [{ googleSearch: {} }],
+        }
+      });
+
+      res.json({
+        reply: response.text || 'I am here to assist with your farm management, crop health, and market prices.',
+        groundingMetadata: response.candidates?.[0]?.groundingMetadata ?? null,
+      });
+    } catch (err: any) {
+      console.error('AI chat error:', err);
+      res.status(500).json({ error: err.message || 'AI service error' });
+    }
+  });
+
   app.use('/api', express.text({ type: '*/*', limit: '2mb' }));
 
   app.use('/api', async (req, res) => {

@@ -28,6 +28,9 @@ import { DEMO_MANDI_PRICES, DEMO_PRICE_TREND } from '../../data/mandiPrices'
 import { DEMO_IRRIGATION_HISTORY } from '../../data/irrigation'
 import { DEMO_WEATHER } from '../../data/irrigation'
 import { formatDate, formatINR, relativeTime } from '../../services/utils'
+import { WeatherMonitoringCard } from '../../components/farmer/WeatherMonitoringCard'
+import { GrowthProjectionChart } from '../../components/farmer/GrowthProjectionChart'
+import { LiveGeminiIntelligenceCard } from '../../components/farmer/LiveGeminiIntelligenceCard'
 
 export function FarmerDashboard() {
   const { user } = useAuth()
@@ -74,6 +77,24 @@ export function FarmerDashboard() {
           )
         })}
       </Stagger>
+
+      <div className="mt-6">
+        <Reveal>
+          <WeatherMonitoringCard />
+        </Reveal>
+      </div>
+
+      <div className="mt-6">
+        <Reveal>
+          <GrowthProjectionChart />
+        </Reveal>
+      </div>
+
+      <div className="mt-6">
+        <Reveal>
+          <LiveGeminiIntelligenceCard />
+        </Reveal>
+      </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-3">
         <Reveal className="xl:col-span-2">
