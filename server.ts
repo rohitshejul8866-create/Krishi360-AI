@@ -2,6 +2,7 @@ import 'dotenv/config';
 import type { APIGatewayProxyEvent } from 'aws-lambda';
 import express from 'express';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer as createViteServer } from 'vite';
@@ -111,6 +112,7 @@ async function startServer() {
 
   const app = express();
   app.disable('x-powered-by');
+  const httpServer = http.createServer(app);
   app.use('/api', express.text({ type: '*/*', limit: '2mb' }));
 
   app.use('/api', async (req, res) => {
@@ -153,8 +155,14 @@ async function startServer() {
   });
 
   if (process.env.NODE_ENV !== 'production') {
+    const disableHmr = process.env.DISABLE_HMR === 'true' || Boolean(process.env.APP_URL);
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: disableHmr ? false : { server: httpServer },
+        ws: { server: httpServer },
+        watch: disableHmr ? null : undefined,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -171,7 +179,7 @@ async function startServer() {
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`KRISHI360 server listening on http://0.0.0.0:${port}`);
   });
 }
