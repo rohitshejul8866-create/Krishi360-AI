@@ -1003,6 +1003,65 @@ export async function deleteFirebaseCopilotSession(uid: string, sessionId: strin
   }
 }
 
+export async function saveEmailUserToFirestore(user: DemoUser): Promise<void> {
+  const uid = user.id
+  const userRef = doc(db, 'users', uid)
+  const profileRef = doc(db, 'users', uid, 'private', 'profile')
+  const workspaceRef = doc(db, 'users', uid, 'workspace', 'state')
+  try {
+    await setDoc(
+      userRef,
+      {
+        uid,
+        displayName: user.name.slice(0, 120),
+        role: user.role,
+        status: user.status || 'active',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+
+    await setDoc(
+      profileRef,
+      {
+        uid,
+        email: user.email.toLowerCase(),
+        location: user.location || 'India',
+        phone: user.phone || '',
+        organisation: user.organisation || '',
+        specialisation: user.specialisation || '',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+
+    await setDoc(
+      workspaceRef,
+      {
+        ownerId: uid,
+        savedSchemeIds: [],
+        applications: [],
+        mandiAlerts: [],
+        irrigationSchedules: [],
+        customCrops: [],
+        preferences: {
+          language: 'English',
+          notificationsEnabled: true,
+          compactTables: false,
+          expertReviewSlaHours: 24,
+        },
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    )
+  } catch (err) {
+    console.warn('Failed to mirror email user to Firestore:', err)
+  }
+}
+
 export async function listFirestoreMandiPrices(): Promise<MandiPrice[]> {
   const path = 'mandiPrices'
   try {

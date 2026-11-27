@@ -12,6 +12,7 @@ import {
 } from '../services/authService'
 import {
   ensureFirebaseUserWorkspace,
+  saveEmailUserToFirestore,
   updateFirebaseProfile,
 } from '../services/firestoreService'
 import { useApp } from '../services/store'
@@ -108,6 +109,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const next = await authService.loginFarmer(input)
         setUser(next)
         setAuthProvider('express')
+        void saveEmailUserToFirestore(next)
         addAuditLog(next.name, next.role, 'Farmer signed in', 'Authentication')
         return next
       } finally {
@@ -126,6 +128,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         addUser(next)
         setUser(next)
         setAuthProvider('express')
+        void saveEmailUserToFirestore(next)
         addAuditLog(next.name, next.role, 'Farmer registered account', 'Authentication')
         return next
       } finally {
@@ -143,6 +146,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const next = await authService.loginStaff(input)
         setUser(next)
         setAuthProvider('express')
+        void saveEmailUserToFirestore(next)
         addAuditLog(next.name, next.role, `Signed in to ${next.role} panel`, 'Authentication')
         return next
       } finally {
@@ -161,6 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         addUser(next)
         setUser(next)
         setAuthProvider('express')
+        void saveEmailUserToFirestore(next)
         addAuditLog(next.name, next.role, 'Claimed initial admin credentials', 'Authentication')
         return next
       } finally {
