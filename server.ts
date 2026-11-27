@@ -23,7 +23,10 @@ import { closeSqliteDbs } from './backend/src/repositories/sqlite/client';
 import { seedDemoPortalData } from './backend/src/seed/demoPortalSeed';
 import { runKrishiCopilotChat, runLiveIntelligenceBrief } from './backend/src/services/ai/copilot';
 import { createAiService } from './backend/src/services/ai/factory';
+import { GeminiAnalysisService } from './backend/src/services/ai/gemini';
 import { ensureDynamoTable } from './backend/src/services/awsDatabaseService';
+import { AppError } from './backend/src/utils/errors';
+import { corsHeaders } from './backend/src/utils/response';
 
 interface CompiledRoute {
   route: Route;
@@ -97,6 +100,9 @@ async function startServer() {
 
   const container = buildContainer(config);
   const aiService = createAiService(config);
+  const cropVisionService = config.geminiApiKeyConfigured
+    ? new GeminiAnalysisService(config.geminiModelId)
+    : aiService;
   setContainer(container);
 
   if (config.dataBackend === 'dynamodb') {
@@ -131,6 +137,17 @@ async function startServer() {
   app.disable('x-powered-by');
   const httpServer = http.createServer(app);
 
+  app.use('/api/ai', (req, res, next) => {
+    const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+    for (const [k, v] of Object.entries(corsHeaders(config, origin))) {
+      res.setHeader(k, v);
+    }
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end();
+    }
+    next();
+  });
+
   app.post('/api/ai/live-intelligence', express.json({ limit: '64kb' }), async (req, res) => {
     try {
       const parsed = liveIntelBodySchema.safeParse(req.body);
@@ -144,13 +161,15 @@ async function startServer() {
         },
       });
     } catch (err) {
-      console.error('Live intelligence error:', err instanceof Error ? err.message : err);
-      res.status(503).json({
-        error:
-          err instanceof Error && err.message.includes('not configured')
-            ? err.message
-            : 'Unable to fetch grounded agricultural intelligence from Gemini right now.',
-      });
+      const message = err instanceof Error ? err.message : 'Unable to fetch grounded agricultural intelligence from Gemini right now.';
+      const status = err instanceof AppError ? err.statusCode : 503;
+      const code = err instanceof AppError ? err.code : 'AI_LIVE_INTELLIGENCE_UNAVAILABLE';
+      if (err instanceof AppError) {
+        console.warn('Live intelligence unavailable:', code, message);
+      } else {
+        console.error('Live intelligence error:', message);
+      }
+      res.status(status).json({ error: { code, message } });
     }
   });
 
@@ -163,13 +182,15 @@ async function startServer() {
       const result = await runKrishiCopilotChat(parsed.data);
       res.json({ data: result });
     } catch (err) {
-      console.error('AI chat error:', err instanceof Error ? err.message : err);
-      res.status(503).json({
-        error:
-          err instanceof Error && err.message.includes('not configured')
-            ? err.message
-            : 'KRISHI360 AI Copilot could not reach Gemini right now. Please try again.',
-      });
+      const message = err instanceof Error ? err.message : 'KRISHI360 AI Copilot could not reach Gemini right now. Please try again.';
+      const status = err instanceof AppError ? err.statusCode : 503;
+      const code = err instanceof AppError ? err.code : 'AI_CHAT_UNAVAILABLE';
+      if (err instanceof AppError) {
+        console.warn('AI chat unavailable:', code, message);
+      } else {
+        console.error('AI chat error:', message);
+      }
+      res.status(status).json({ error: { code, message } });
     }
   });
 
@@ -180,7 +201,7 @@ async function startServer() {
     }
     try {
       const { crop, plantPart, location, symptoms, imageBase64, imageMimeType } = parsed.data;
-      const analysis = await aiService.analyze({
+      const analysis = await cropVisionService.analyze({
         crop,
         plantPart,
         location: location || 'India',
@@ -192,10 +213,11 @@ async function startServer() {
       });
       res.json({ data: { analysis } });
     } catch (err) {
-      console.error('AI crop-analyze error:', err instanceof Error ? err.message : err);
-      res.status(503).json({
-        error: err instanceof Error ? err.message : 'Gemini Vision crop analysis failed.',
-      });
+      const message = err instanceof Error ? err.message : 'Gemini Vision crop analysis failed.';
+      const status = err instanceof AppError ? err.statusCode : 503;
+      const code = err instanceof AppError ? err.code : 'AI_CROP_ANALYZE_FAILED';
+      console.error('AI crop-analyze error:', message);
+      res.status(status).json({ error: { code, message } });
     }
   });
 

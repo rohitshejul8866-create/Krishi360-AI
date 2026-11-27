@@ -6,6 +6,7 @@ import { Field, Select, Textarea } from '../../components/ui/Input'
 import { Modal } from '../../components/ui/Modal'
 import { DemoNote } from '../../components/common/DemoNote'
 import { formatDateTime, formatNumber } from '../../services/utils'
+import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 import { useApp } from '../../services/store'
 import { AdminCollectionPage, type AdminFilter } from './AdminCollectionPage'
@@ -17,15 +18,19 @@ const statusFilter: AdminFilter<Batch> = { label: 'Status', options: ['normal', 
 const cropFilter: AdminFilter<Batch> = { label: 'Crop', options: ['Wheat', 'Rice', 'Onion', 'Potato', 'Tomato', 'Grapes'], value: (row) => row.crop }
 
 export function StorageMonitoringPage() {
-  const { storageBatches, settings, addInspection } = useApp()
+  const { user } = useAuth()
+  const { storageBatches, users, settings, addInspection } = useApp()
   const { show } = useToast()
   const [inspectionOpen, setInspectionOpen] = useState(false)
   const [batchId, setBatchId] = useState('')
   const [notes, setNotes] = useState('')
   const [error, setError] = useState('')
 
+  const ownerName = (ownerId?: string) =>
+    users.find((u) => u.id === ownerId)?.name ?? (ownerId ? ownerId.slice(0, 12) : 'Farmer')
+
   const columns: Column<Batch>[] = [
-    { key: 'code', label: 'Batch', render: (row) => <div><p className="font-bold text-ink">{row.code}</p><p className="text-xs text-muted">{row.crop}</p></div> },
+    { key: 'code', label: 'Batch', render: (row) => <div><p className="font-bold text-ink">{row.code}</p><p className="text-xs text-muted">{row.crop} · {ownerName(row.ownerId)}</p></div> },
     { key: 'location', label: 'Location', render: (row) => row.location },
     { key: 'quantity', label: 'Quantity', render: (row) => `${formatNumber(row.quantityKg)} kg` },
     { key: 'temp', label: 'Temperature', render: (row) => <span className={row.tempC > settings.storageAlertTemp ? 'font-bold text-alert' : 'text-ink'}>{row.tempC}°C</span> },
@@ -39,8 +44,8 @@ export function StorageMonitoringPage() {
       setError('Select a batch and enter at least 8 characters of inspection notes.')
       return
     }
-    addInspection(selected, notes.trim(), 'Admin User')
-    show('Inspection recorded', 'The demo inspection entry was added to the batch history.')
+    void addInspection(selected, notes.trim(), user?.name ?? 'Admin User')
+    show('Inspection recorded', 'The inspection entry was added to the batch history.')
     setNotes('')
     setError('')
     setInspectionOpen(false)
@@ -51,21 +56,22 @@ export function StorageMonitoringPage() {
       <AdminCollectionPage
         eyebrow="Storage network"
         title="Storage monitoring"
-        description="Review sample storage batches, simulated sensor values and inspection histories."
+        description="Review storage batches, sensor values, and inspection histories across all farmers."
         rows={storageBatches}
         columns={columns}
-        searchable={(row) => [row.code, row.crop, row.location, row.status]}
+        searchable={(row) => [row.code, row.crop, row.location, row.status, ownerName(row.ownerId)]}
         filters={[statusFilter, cropFilter]}
         stats={[
-          { label: 'Batches', value: storageBatches.length, detail: 'Under demo observation', icon: <Warehouse size={18} />, tone: 'sage' },
-          { label: 'Normal', value: storageBatches.filter((row) => row.status === 'normal').length, detail: 'Within sample thresholds', icon: <Warehouse size={18} />, tone: 'forest' },
+          { label: 'Batches', value: storageBatches.length, detail: 'Across farmer network', icon: <Warehouse size={18} />, tone: 'sage' },
+          { label: 'Normal', value: storageBatches.filter((row) => row.status === 'normal').length, detail: 'Within thresholds', icon: <Warehouse size={18} />, tone: 'forest' },
           { label: 'Warnings', value: storageBatches.filter((row) => row.status === 'warning').length, detail: 'Needs attention', icon: <Thermometer size={18} />, tone: 'alert' },
-          { label: 'Inspections', value: storageBatches.reduce((total, row) => total + row.inspections.length, 0), detail: 'Logged in demo', icon: <ClipboardCheck size={18} />, tone: 'neutral' },
+          { label: 'Inspections', value: storageBatches.reduce((total, row) => total + row.inspections.length, 0), detail: 'Logged entries', icon: <ClipboardCheck size={18} />, tone: 'neutral' },
         ]}
         detailTitle={(row) => `${row.code} · ${row.crop}`}
         detailContent={(row) => (
           <div className="space-y-5">
             <div className="grid gap-4 sm:grid-cols-2">
+              <div><p className="text-xs font-bold uppercase tracking-wide text-muted">Farmer</p><p className="font-semibold text-ink">{ownerName(row.ownerId)}</p></div>
               <div><p className="text-xs font-bold uppercase tracking-wide text-muted">Location</p><p className="font-semibold text-ink">{row.location}</p></div>
               <div><p className="text-xs font-bold uppercase tracking-wide text-muted">Quantity</p><p className="font-semibold text-ink">{formatNumber(row.quantityKg)} kg</p></div>
               <div><p className="text-xs font-bold uppercase tracking-wide text-muted">Temperature</p><p className="font-semibold text-ink">{row.tempC}°C (limit {settings.storageAlertTemp}°C)</p></div>
@@ -93,9 +99,9 @@ export function StorageMonitoringPage() {
         )}
         confirm={{
           label: 'Quick check',
-          description: (row) => `Add a standard demo inspection entry for batch ${row.code}?`,
+          description: (row) => `Add a standard inspection entry for batch ${row.code}?`,
           onConfirm: (row) => {
-            addInspection(row.id, 'Routine demo inspection completed. Condition unchanged.', 'Admin User')
+            void addInspection(row.id, 'Routine inspection completed. Condition unchanged.', user?.name ?? 'Admin User')
             show('Inspection recorded', `Standard check added to ${row.code}.`)
           },
         }}

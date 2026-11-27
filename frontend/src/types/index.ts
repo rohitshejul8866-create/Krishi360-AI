@@ -189,6 +189,7 @@ export interface Inspection {
 
 export interface StorageBatch {
   id: string
+  ownerId?: string
   code: string
   crop: string
   quantityKg: number
@@ -227,6 +228,7 @@ export interface SchemeApplication {
 
 export interface NotificationItem {
   id: string
+  ownerId?: string
   title: string
   body: string
   severity: Severity

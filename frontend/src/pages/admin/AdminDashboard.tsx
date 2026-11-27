@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Activity,
@@ -7,6 +8,7 @@ import {
   FlaskConical,
   Landmark,
   MessageSquareText,
+  RefreshCw,
   ScrollText,
   Server,
   ShieldCheck,
@@ -31,18 +33,30 @@ import { useApp } from '../../services/store'
 import { relativeTime } from '../../services/utils'
 
 export function AdminDashboard() {
-  const { user } = useAuth()
-  const { cases, users, schemes, storageBatches, mandiAlerts, auditLogs, notifications } = useApp()
+  const { user, authProvider } = useAuth()
+  const { cases, users, farms, schemes, storageBatches, mandiAlerts, auditLogs, notifications, syncBackendData } = useApp()
+  const [refreshing, setRefreshing] = useState(false)
   const openCases = cases.filter((item) => item.status !== 'resolved')
   const criticalBatches = storageBatches.filter((batch) => batch.status === 'critical')
   const pendingUsers = users.filter((account) => account.status === 'invited')
+  const farmerCount = users.filter((account) => account.role === 'farmer').length
+
+  const handleRefresh = async () => {
+    if (!user || !authProvider) return
+    setRefreshing(true)
+    try {
+      await syncBackendData({ id: user.id, role: user.role, name: user.name, provider: authProvider })
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   const quickLinks = [
-    { label: 'Backend & AWS DB', to: '/admin/backend', icon: Server, detail: 'DynamoDB & APIs' },
+    { label: 'Farmer network', to: '/admin/farmers', icon: Users, detail: `${farmerCount} farmers · ${farms.length} farms` },
+    { label: 'Backend & DB', to: '/admin/backend', icon: Server, detail: 'Database & APIs' },
     { label: 'User management', to: '/admin/users', icon: Users, detail: `${pendingUsers.length} invited` },
     { label: 'Crop cases', to: '/admin/cases', icon: Activity, detail: `${openCases.length} open` },
-    { label: 'Mandi data', to: '/admin/mandi', icon: Store, detail: `${mandiAlerts.length} alerts` },
-    { label: 'Schemes', to: '/admin/schemes', icon: Landmark, detail: `${schemes.length} entries` },
+    { label: 'Mandi & Schemes', to: '/admin/schemes', icon: Landmark, detail: `${schemes.length} schemes · ${mandiAlerts.length} alerts` },
   ]
 
   return (
@@ -54,7 +68,15 @@ export function AdminDashboard() {
         badge={<DemoNote label="Connected backend" />}
         actions={
           <>
-            <Link to="/admin/backend" className="inline-flex items-center gap-2 rounded-2xl border border-line bg-white/70 px-4 py-2.5 text-xs font-bold text-forest hover:border-sage"><Server size={15} /> Backend & AWS DB</Link>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="inline-flex items-center gap-2 rounded-2xl border border-line bg-white/70 px-4 py-2.5 text-xs font-bold text-forest hover:border-sage disabled:opacity-60"
+            >
+              <RefreshCw size={15} className={refreshing ? 'animate-spin' : ''} /> Sync live
+            </button>
+            <Link to="/admin/backend" className="inline-flex items-center gap-2 rounded-2xl border border-line bg-white/70 px-4 py-2.5 text-xs font-bold text-forest hover:border-sage"><Server size={15} /> Backend & DB</Link>
             <Link to="/admin/audit-logs" className="inline-flex items-center gap-2 rounded-2xl border border-line bg-white/70 px-4 py-2.5 text-xs font-bold text-forest hover:border-sage"><ScrollText size={15} /> Audit logs</Link>
             <Link to="/admin/settings" className="inline-flex items-center gap-2 rounded-2xl bg-forest px-4 py-2.5 text-xs font-bold text-white hover:bg-[#2b402c]"><ShieldCheck size={15} /> Platform settings</Link>
           </>
@@ -63,10 +85,10 @@ export function AdminDashboard() {
 
       <Stagger className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {[
-          { label: 'Total users', value: users.length, detail: 'Registered portal accounts', icon: Users, tone: 'sage' as const },
-          { label: 'Open cases', value: openCases.length, detail: 'Farmer diagnoses in progress', icon: Activity, tone: 'forest' as const },
-          { label: 'Storage alerts', value: criticalBatches.length, detail: 'Simulated critical batches', icon: Warehouse, tone: criticalBatches.length ? ('alert' as const) : ('sage' as const) },
-          { label: 'Notifications', value: notifications.length, detail: 'Local announcements', icon: Bell, tone: 'neutral' as const },
+          { label: 'Total users', value: users.length, detail: `${farmerCount} farmers · ${farms.length} farms`, icon: Users, tone: 'sage' as const },
+          { label: 'Open cases', value: openCases.length, detail: `${cases.length} total farmer cases`, icon: Activity, tone: 'forest' as const },
+          { label: 'Storage alerts', value: criticalBatches.length, detail: `${storageBatches.length} monitored batches`, icon: Warehouse, tone: criticalBatches.length ? ('alert' as const) : ('sage' as const) },
+          { label: 'Notifications', value: notifications.length, detail: 'Portal alerts & updates', icon: Bell, tone: 'neutral' as const },
         ].map((stat) => {
           const Icon = stat.icon
           return (

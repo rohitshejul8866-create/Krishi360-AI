@@ -218,7 +218,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           ...(patch.specialisation !== undefined ? { specialisation: patch.specialisation } : {}),
           ...(patch.organisation !== undefined ? { organisation: patch.organisation } : {}),
         })
-        setUser((current) => (current ? { ...current, ...patch } : current))
+        setUser((current) => {
+          const next = current ? { ...current, ...patch } : current
+          if (next) addAuditLog(next.name, next.role, 'Updated profile details', next.id)
+          return next
+        })
         return
       }
       const updated = await authService.updateProfile({
@@ -229,8 +233,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ...(patch.organisation !== undefined ? { organisation: patch.organisation } : {}),
       })
       setUser(updated)
+      addAuditLog(updated.name, updated.role, 'Updated profile details', updated.id)
     },
-    [authProvider],
+    [addAuditLog, authProvider],
   )
 
   const value = useMemo<AuthContextValue>(

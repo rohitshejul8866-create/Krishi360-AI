@@ -213,8 +213,8 @@ export function PortalShell({ role, portalName, navItems }: PortalShellProps) {
       </AnimatePresence>
 
       <div className="lg:pl-[268px]">
-        <header className="sticky top-2 z-30 px-3 pt-3 sm:px-5 sm:pt-5">
-          <div className="glass-panel mx-auto flex max-w-[1500px] items-center gap-2 rounded-[22px] px-3 py-2 sm:px-4">
+        <header className="sticky top-0 z-30 bg-[#f7f5ef]/95 px-3 pt-3 pb-2 backdrop-blur-xl sm:px-5 sm:pt-4 sm:pb-2.5">
+          <div className="mx-auto flex max-w-[1500px] items-center gap-2 rounded-[22px] border border-line/90 bg-white/95 px-3 py-2 shadow-[0_14px_34px_-24px_rgba(38,51,40,0.42)] sm:px-4">
             <button
               type="button"
               onClick={() => setSidebarOpen(true)}
@@ -359,7 +359,7 @@ export function PortalShell({ role, portalName, navItems }: PortalShellProps) {
           </div>
         </header>
 
-        <main className="mx-auto max-w-[1500px] px-3 pt-6 pb-10 sm:px-5 sm:pt-8 sm:pb-14">
+        <main className="mx-auto max-w-[1500px] px-3 pt-4 pb-10 sm:px-5 sm:pt-6 sm:pb-14">
           <PageTransition>
             <Outlet />
           </PageTransition>

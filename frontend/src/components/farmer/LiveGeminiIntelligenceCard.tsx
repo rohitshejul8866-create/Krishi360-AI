@@ -26,6 +26,8 @@ interface LiveIntelligence {
   groundingSources?: GroundingSource[]
   searchQueries?: string[]
   modelUsed?: string
+  searchGrounded?: boolean
+  groundingNotice?: string
   generatedAt?: string
 }
 
@@ -47,10 +49,28 @@ export function LiveGeminiIntelligenceCard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ region }),
       })
-      const json = (await res.json().catch(() => ({}))) as {
+      const rawText = await res.text()
+      let json: {
         data?: LiveIntelligence
         error?: string | { message?: string }
+      } | null = null
+      if (rawText) {
+        try {
+          json = JSON.parse(rawText) as {
+            data?: LiveIntelligence
+            error?: string | { message?: string }
+          }
+        } catch {
+          json = null
+        }
       }
+
+      if (!json) {
+        throw new Error(
+          'AI backend (/api/ai/live-intelligence) is not reachable on this host. Configure VITE_API_BASE_URL to your deployed backend server with GEMINI_API_KEY set.',
+        )
+      }
+
       if (!res.ok || !json.data) {
         const msg = typeof json.error === 'string' ? json.error : json.error?.message
         throw new Error(msg || 'Failed to fetch live agricultural briefing from Gemini')
@@ -74,15 +94,23 @@ export function LiveGeminiIntelligenceCard() {
         description={`Live Google Search grounded briefing for ${region} powered by Gemini 4 Hydrogen.`}
         icon={<Sparkles className="text-amber-600" size={20} />}
         action={
-          <div className="flex items-center gap-2">
-            <Badge tone={error ? 'warning' : 'success'} className="gap-1 font-bold text-[11px]">
-              <Globe size={11} /> {error ? 'Live Search Unavailable' : 'Grounded Search Live'}
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            <Badge
+              tone={error ? 'warning' : data?.searchGrounded === false ? 'info' : 'success'}
+              className="gap-1 whitespace-nowrap font-bold text-[11px]"
+            >
+              <Globe size={11} className="shrink-0" />{' '}
+              {error
+                ? 'Live Search Unavailable'
+                : data?.searchGrounded === false
+                  ? 'Gemini Brief · Search Paused'
+                  : 'Grounded Search Live'}
             </Badge>
             <button
               type="button"
               onClick={() => void fetchLiveIntelligence()}
               disabled={loading}
-              className="inline-flex items-center gap-1.5 rounded-xl border border-line bg-white px-3 py-1.5 text-xs font-bold text-forest shadow-xs hover:bg-sage/10 transition disabled:opacity-60"
+              className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-line bg-white px-3 py-1.5 text-xs font-bold text-forest shadow-xs transition hover:bg-sage/10 disabled:opacity-60"
             >
               <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Refresh Live AI
             </button>
@@ -119,10 +147,18 @@ export function LiveGeminiIntelligenceCard() {
 
         {data ? (
           <>
+            {data.groundingNotice ? (
+              <div className="flex items-start gap-2.5 rounded-2xl border border-amber-200 bg-amber-50/90 px-4 py-3 text-xs text-amber-950">
+                <AlertCircle size={15} className="mt-0.5 shrink-0 text-amber-700" />
+                <p className="leading-relaxed">{data.groundingNotice}</p>
+              </div>
+            ) : null}
+
             <div className="rounded-2xl bg-forest p-4 text-white shadow-md">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-[10px] font-bold uppercase tracking-wider text-sage/90">
-                  Gemini Real-Time Brief · {data.modelUsed ?? 'gemini-4-hydrogen'}
+                  {data.searchGrounded === false ? 'Gemini Advisory Brief' : 'Gemini Real-Time Brief'} ·{' '}
+                  {data.modelUsed ?? 'gemini-4-hydrogen'}
                 </p>
                 {data.generatedAt ? (
                   <p className="text-[10px] text-white/70">

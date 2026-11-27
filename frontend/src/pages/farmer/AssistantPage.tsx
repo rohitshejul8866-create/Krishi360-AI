@@ -37,13 +37,13 @@ const suggestions = [
   'Which PM-KISAN or crop insurance documents should I keep ready?',
 ]
 
-function buildWelcomeMessage(): ChatMessage {
+function buildWelcomeMessage(initialMode: 'grounded' | 'fast' = 'fast'): ChatMessage {
   return {
     id: 'welcome',
     sender: 'assistant',
     text: 'Namaste! I am the KRISHI360 AI Copilot powered by Gemini. Ask about crop health preparation, live mandi trends, irrigation planning, grain storage thresholds, or farmer schemes.',
     time: new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }),
-    modelUsed: 'gemini-4-hydrogen',
+    modelUsed: initialMode === 'grounded' ? 'gemini-4-hydrogen' : 'gemini-3.1-flash-lite',
   }
 }
 
@@ -73,8 +73,8 @@ export function AssistantPage() {
   const criticalBatches = storageBatches.filter((batch) => batch.status === 'critical').length
   const openCasesCount = cases.filter((c) => c.status !== 'resolved').length
 
-  const [mode, setMode] = useState<'grounded' | 'fast'>('grounded')
-  const [messages, setMessages] = useState<ChatMessage[]>(() => [buildWelcomeMessage()])
+  const [mode, setMode] = useState<'grounded' | 'fast'>('fast')
+  const [messages, setMessages] = useState<ChatMessage[]>(() => [buildWelcomeMessage('fast')])
   const [sessions, setSessions] = useState<CopilotSessionRecord[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>(undefined)
   const [loadingSessions, setLoadingSessions] = useState(false)
@@ -196,12 +196,44 @@ export function AssistantPage() {
             openCasesCount,
             criticalStorageCount: criticalBatches,
             activeAlertsCount: mandiAlerts.length,
+            recentCases: cases
+              .filter((c) => c.status !== 'resolved')
+              .slice(0, 5)
+              .map((c) => ({
+                id: c.id,
+                crop: c.crop,
+                condition: c.condition,
+                reviewStatus: c.reviewStatus,
+              })),
+            criticalBatches: storageBatches
+              .filter((b) => b.status !== 'normal')
+              .slice(0, 5)
+              .map((b) => ({
+                code: b.code,
+                crop: b.crop,
+                tempC: b.tempC,
+                humidity: b.humidity,
+                status: b.status,
+              })),
           },
         }),
       })
-      const json = (await res.json().catch(() => ({}))) as Omit<ChatApiResponse, 'error'> & {
-        error?: string | { message?: string }
+      const rawText = await res.text()
+      let json: (Omit<ChatApiResponse, 'error'> & { error?: string | { message?: string } }) | null = null
+      if (rawText) {
+        try {
+          json = JSON.parse(rawText) as Omit<ChatApiResponse, 'error'> & { error?: string | { message?: string } }
+        } catch {
+          json = null
+        }
       }
+
+      if (!json) {
+        throw new Error(
+          'AI backend (/api/ai/chat) is not reachable on this host. Set VITE_API_BASE_URL to your deployed backend API server with GEMINI_API_KEY configured.',
+        )
+      }
+
       if (!res.ok || !json.data) {
         const msg = typeof json.error === 'string' ? json.error : json.error?.message
         throw new Error(msg || 'Gemini Copilot request failed.')
@@ -248,11 +280,11 @@ export function AssistantPage() {
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-xl border border-line bg-white p-1">
+            <div className="inline-flex shrink-0 rounded-xl border border-line bg-white p-1">
               <button
                 type="button"
                 onClick={() => setMode('grounded')}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-bold transition ${
                   mode === 'grounded' ? 'bg-forest text-white' : 'text-muted hover:text-ink'
                 }`}
               >
@@ -261,14 +293,14 @@ export function AssistantPage() {
               <button
                 type="button"
                 onClick={() => setMode('fast')}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-bold transition ${
                   mode === 'fast' ? 'bg-forest text-white' : 'text-muted hover:text-ink'
                 }`}
               >
                 <Zap size={13} /> Fast Mode
               </button>
             </div>
-            <Button variant="outline" onClick={startNewChat}>
+            <Button variant="outline" onClick={startNewChat} className="whitespace-nowrap">
               <Plus size={14} /> New conversation
             </Button>
           </div>
@@ -359,8 +391,20 @@ export function AssistantPage() {
             ) : null}
 
             {lastError ? (
-              <div className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-950">
-                {lastError}
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-950">
+                <span>{lastError}</span>
+                {mode === 'grounded' ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMode('fast')
+                      setLastError(null)
+                    }}
+                    className="shrink-0 rounded-lg bg-amber-900 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-amber-800"
+                  >
+                    Switch to Fast Mode
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>

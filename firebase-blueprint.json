@@ -27,6 +27,11 @@
           "maxLength": 512,
           "description": "Optional avatar image URL."
         },
+        "status": {
+          "type": "string",
+          "enum": ["active", "invited", "suspended"],
+          "description": "Account status."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time",
@@ -492,6 +497,81 @@
         }
       },
       "required": ["ownerId", "title", "body", "severity", "audience", "read", "createdAt", "updatedAt"]
+    },
+    "MandiPrice": {
+      "title": "MandiPrice",
+      "description": "Mandi market price record created by administrators.",
+      "type": "object",
+      "properties": {
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "crop": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "state": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "district": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "mandi": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "minPrice": { "type": "number" },
+        "maxPrice": { "type": "number" },
+        "modalPrice": { "type": "number" },
+        "changePct": { "type": "number" },
+        "date": { "type": "string", "minLength": 4, "maxLength": 32 },
+        "source": { "type": "string", "maxLength": 160 },
+        "dataType": { "type": "string", "enum": ["sample", "verified"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["createdBy", "crop", "state", "district", "mandi", "minPrice", "maxPrice", "modalPrice", "date", "dataType", "createdAt", "updatedAt"]
+    },
+    "SchemeEntry": {
+      "title": "SchemeEntry",
+      "description": "Agricultural government scheme catalogue entry.",
+      "type": "object",
+      "properties": {
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "category": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "state": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "eligibility": { "type": "array" },
+        "documents": { "type": "array" },
+        "sourceLabel": { "type": "string", "maxLength": 160 },
+        "sourceUrl": { "type": "string", "maxLength": 512 },
+        "tags": { "type": "array" },
+        "dataType": { "type": "string", "enum": ["sample", "verified"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["createdBy", "name", "category", "state", "summary", "eligibility", "documents", "sourceLabel", "sourceUrl", "tags", "dataType", "createdAt", "updatedAt"]
+    },
+    "PlatformSettings": {
+      "title": "PlatformSettings",
+      "description": "Global platform configuration and alert threshold settings.",
+      "type": "object",
+      "properties": {
+        "language": { "type": "string", "maxLength": 40 },
+        "notificationsEnabled": { "type": "boolean" },
+        "demoMode": { "type": "boolean" },
+        "compactTables": { "type": "boolean" },
+        "expertReviewSlaHours": { "type": "number" },
+        "storageAlertTemp": { "type": "number" },
+        "storageAlertHumidity": { "type": "number" },
+        "updatedBy": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["language", "notificationsEnabled", "demoMode", "compactTables", "expertReviewSlaHours", "storageAlertTemp", "storageAlertHumidity", "createdAt", "updatedAt"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Append-only platform action audit trail.",
+      "type": "object",
+      "properties": {
+        "actorUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actor": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "role": { "type": "string", "enum": ["farmer", "expert", "admin"] },
+        "action": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "target": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["actorUid", "actor", "role", "action", "target", "createdAt"]
     }
   },
   "firestore": {
@@ -534,6 +614,22 @@
     "/users/{userId}/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/UserNotification" },
       "description": "User-owned portal notifications."
+    },
+    "/mandiPrices/{priceId}": {
+      "schema": { "$ref": "#/entities/MandiPrice" },
+      "description": "Agricultural mandi price catalogue entries."
+    },
+    "/schemes/{schemeId}": {
+      "schema": { "$ref": "#/entities/SchemeEntry" },
+      "description": "Agricultural government scheme catalogue entries."
+    },
+    "/platform/settings": {
+      "schema": { "$ref": "#/entities/PlatformSettings" },
+      "description": "Global platform configuration and alert threshold document."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Append-only user and administrator audit log entries."
     }
   }
 }

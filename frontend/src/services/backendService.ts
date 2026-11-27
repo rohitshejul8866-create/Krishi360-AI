@@ -57,9 +57,16 @@ export interface S3BucketInspection {
   message: string
 }
 
+export interface FirestoreInspection {
+  projectId: string
+  databaseId: string
+  serverReachable: boolean
+  message: string
+}
+
 export interface BackendStatusSnapshot {
   service: string
-  dataBackend: 'memory' | 'sqlite' | 'dynamodb'
+  dataBackend: 'memory' | 'sqlite' | 'dynamodb' | 'firestore'
   awsRegion: string
   usersTableName: string
   flagTableName: string
@@ -72,14 +79,15 @@ export interface BackendStatusSnapshot {
   aiProvider: 'disabled' | 'heuristic' | 'bedrock' | 'gemini'
   bedrockConfigured: boolean
   bedrockModelId: string
-  authMode: 'dev' | 'session' | 'cognito'
+  authMode: 'dev' | 'session' | 'cognito' | 'firebase-google'
   dynamo: DynamoTableInspection
   usersDynamo: DynamoTableInspection
   flagDynamo: DynamoTableInspection
   sqlite?: SqliteInspection
+  firestore?: FirestoreInspection
   counts: Record<BackendEntityName, number>
   singleTableSchema: Array<{
-    table: 'Users Login Table' | 'Flag Data Table'
+    table: 'Users Login Table' | 'Flag Data Table' | 'Root Collection' | 'User Subcollection'
     entity: string
     pkPattern: string
     skPattern: string

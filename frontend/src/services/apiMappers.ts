@@ -255,6 +255,7 @@ export function mapMandiPrice(item: BackendMandiPrice): MandiPrice {
 export function mapStorageBatch(batch: BackendStorageBatch, inspections: BackendInspection[] = []): StorageBatch {
   return {
     id: batch.id,
+    ownerId: batch.ownerId,
     code: batch.code,
     crop: batch.crop,
     quantityKg: batch.quantityKg,

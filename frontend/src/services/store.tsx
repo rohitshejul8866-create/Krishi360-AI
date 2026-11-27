@@ -41,16 +41,33 @@ import {
   type BackendWorkspaceSnapshot,
 } from './apiMappers'
 import {
+  createFirebaseAuditLog,
   createFirebaseCropCase,
+  createFirebaseDirectoryUser,
   createFirebaseFarm,
+  createFirebaseMandiPrice,
   createFirebaseNotification,
+  createFirebaseScheme,
   createFirebaseStorageBatch,
   fetchUserFirestoreSnapshot,
+  getFirebasePlatformSettings,
+  listAllFirestoreCropCasesForAdmin,
+  listAllFirestoreFarmsForAdmin,
+  listAllFirestoreNotificationsForAdmin,
+  listAllFirestoreStorageBatchesForAdmin,
+  listFirestoreAuditLogs,
+  listFirestoreMandiPrices,
+  listFirestoreSchemes,
+  listFirestoreUsersForAdmin,
   logFirebaseSoilReading,
   markFirebaseNotificationRead,
+  saveFirebasePlatformSettings,
+  subscribeAdminFirestoreData,
+  updateFirebaseCropCaseReview,
   updateFirebaseFarm,
   updateFirebaseStorageBatchReading,
   updateFirebaseStorageInspections,
+  updateFirebaseUserStatus,
   updateFirebaseWorkspaceField,
 } from './firestoreService'
 import { makeId } from './utils'
@@ -274,9 +291,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>(initialState)
   const stateRef = useRef(state)
   const activeRoleRef = useRef<Role | null>(null)
+  const adminUnsubRef = useRef<(() => void) | null>(null)
+  const adminSubUidRef = useRef<string | null>(null)
   useEffect(() => {
     stateRef.current = state
   }, [state])
+  useEffect(() => {
+    return () => {
+      adminUnsubRef.current?.()
+      adminUnsubRef.current = null
+      adminSubUidRef.current = null
+    }
+  }, [])
 
   const persistWorkspace = useCallback(
     async (patch: {
@@ -323,25 +349,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const addAuditLog = useCallback((actor: string, role: Role, action: string, target: string) => {
+    const tempId = makeId('LOG')
+    const optimistic: AuditLog = {
+      id: tempId,
+      actor,
+      role,
+      action,
+      target,
+      timestamp: new Date().toISOString(),
+    }
     setState((current) => ({
       ...current,
-      auditLogs: [
-        {
-          id: makeId('LOG'),
-          actor,
-          role,
-          action,
-          target,
-          timestamp: new Date().toISOString(),
-        },
-        ...current.auditLogs,
-      ],
+      auditLogs: [optimistic, ...current.auditLogs],
     }))
+    if (isFirebaseSession()) {
+      const uid = auth.currentUser?.uid
+      if (uid) {
+        void createFirebaseAuditLog(uid, { actor, role, action, target })
+          .then((saved) => {
+            setState((current) => ({
+              ...current,
+              auditLogs: current.auditLogs.map((item) => (item.id === tempId ? saved : item)),
+            }))
+          })
+          .catch(() => {})
+      }
+    }
   }, [])
 
   const syncBackendData = useCallback(async (authUser?: DevAuthOverride | null) => {
     if (!authUser) {
       activeRoleRef.current = null
+      adminUnsubRef.current?.()
+      adminUnsubRef.current = null
+      adminSubUidRef.current = null
       setState(initialState)
       return
     }
@@ -350,36 +391,158 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (authUser.provider === 'firebase' || isFirebaseSession()) {
       try {
         const uid = auth.currentUser?.uid || authUser.id
-        const fsSnap = await fetchUserFirestoreSnapshot(uid)
-        setState((current) => ({
-          ...current,
-          backendConnected: true,
-          cases: fsSnap.cases,
-          farms: fsSnap.farms,
-          soilReadings: fsSnap.soilReadings,
-          storageBatches: fsSnap.storageBatches,
-          savedSchemeIds: fsSnap.savedSchemeIds,
-          applications: fsSnap.applications,
-          mandiAlerts: fsSnap.mandiAlerts,
-          irrigationSchedules: fsSnap.irrigationSchedules,
-          customCrops: fsSnap.customCrops,
-          notifications: fsSnap.notifications,
-          settings: {
-            ...current.settings,
-            language: fsSnap.preferences.language ?? current.settings.language,
-            notificationsEnabled:
-              fsSnap.preferences.notificationsEnabled ?? current.settings.notificationsEnabled,
-            compactTables: fsSnap.preferences.compactTables ?? current.settings.compactTables,
-            expertReviewSlaHours:
-              fsSnap.preferences.expertReviewSlaHours ?? current.settings.expertReviewSlaHours,
-          },
-        }))
+        const isAdmin = authUser.role === 'admin'
+        const [
+          fsSnapRes,
+          mandiRes,
+          schemesRes,
+          platformRes,
+          auditRes,
+          usersRes,
+          adminCasesRes,
+          adminFarmsRes,
+          adminBatchesRes,
+          adminNotifsRes,
+        ] = await Promise.allSettled([
+          fetchUserFirestoreSnapshot(uid),
+          listFirestoreMandiPrices(),
+          listFirestoreSchemes(),
+          getFirebasePlatformSettings(),
+          listFirestoreAuditLogs(uid, isAdmin),
+          isAdmin ? listFirestoreUsersForAdmin() : Promise.resolve<DemoUser[]>([]),
+          isAdmin ? listAllFirestoreCropCasesForAdmin() : Promise.resolve<CropCase[]>([]),
+          isAdmin ? listAllFirestoreFarmsForAdmin() : Promise.resolve<BackendFarm[]>([]),
+          isAdmin ? listAllFirestoreStorageBatchesForAdmin() : Promise.resolve<StorageBatch[]>([]),
+          isAdmin ? listAllFirestoreNotificationsForAdmin() : Promise.resolve<NotificationItem[]>([]),
+        ])
+
+        if (fsSnapRes.status !== 'fulfilled') {
+          throw fsSnapRes.reason
+        }
+        const fsSnap = fsSnapRes.value
+        const firestoreMandi = mandiRes.status === 'fulfilled' ? mandiRes.value : []
+        const firestoreSchemes = schemesRes.status === 'fulfilled' ? schemesRes.value : []
+        const platformSettings = platformRes.status === 'fulfilled' ? platformRes.value : null
+        const auditLogs = auditRes.status === 'fulfilled' ? auditRes.value : []
+        const users = usersRes.status === 'fulfilled' ? usersRes.value : []
+        const adminCases = adminCasesRes.status === 'fulfilled' ? adminCasesRes.value : []
+        const adminFarms = adminFarmsRes.status === 'fulfilled' ? adminFarmsRes.value : []
+        const adminBatches = adminBatchesRes.status === 'fulfilled' ? adminBatchesRes.value : []
+        const adminNotifs = adminNotifsRes.status === 'fulfilled' ? adminNotifsRes.value : []
+
+        const mergedMandi = [
+          ...firestoreMandi,
+          ...DEMO_MANDI_PRICES.filter(
+            (demo) => !firestoreMandi.some((item) => item.id === demo.id),
+          ),
+        ]
+        const mergedSchemes = [
+          ...firestoreSchemes,
+          ...DEMO_SCHEMES.filter(
+            (demo) => !firestoreSchemes.some((item) => item.id === demo.id),
+          ),
+        ]
+
+        const mergedCasesMap = new Map<string, CropCase>()
+        for (const c of [...adminCases, ...fsSnap.cases]) {
+          if (!mergedCasesMap.has(c.id)) mergedCasesMap.set(c.id, c)
+        }
+        const mergedCases = Array.from(mergedCasesMap.values()).sort((a, b) =>
+          b.submittedAt.localeCompare(a.submittedAt),
+        )
+
+        const mergedFarmsMap = new Map<string, BackendFarm>()
+        for (const f of [...adminFarms, ...fsSnap.farms]) {
+          if (!mergedFarmsMap.has(f.id)) mergedFarmsMap.set(f.id, f)
+        }
+        const mergedFarms = Array.from(mergedFarmsMap.values())
+
+        const mergedBatchesMap = new Map<string, StorageBatch>()
+        for (const b of [...adminBatches, ...fsSnap.storageBatches]) {
+          if (!mergedBatchesMap.has(b.id)) mergedBatchesMap.set(b.id, b)
+        }
+        const mergedBatches = Array.from(mergedBatchesMap.values()).sort((a, b) =>
+          b.createdAt.localeCompare(a.createdAt),
+        )
+
+        const mergedNotifsMap = new Map<string, NotificationItem>()
+        for (const n of [...adminNotifs, ...fsSnap.notifications]) {
+          if (!mergedNotifsMap.has(n.id)) mergedNotifsMap.set(n.id, n)
+        }
+        const mergedNotifs = Array.from(mergedNotifsMap.values()).sort((a, b) =>
+          b.createdAt.localeCompare(a.createdAt),
+        )
+
+        setState((current) => {
+          const baseSettings = platformSettings ?? current.settings
+          return {
+            ...current,
+            backendConnected: true,
+            cases: mergedCases,
+            mandiPrices: mergedMandi,
+            schemes: mergedSchemes,
+            farms: mergedFarms,
+            soilReadings: fsSnap.soilReadings,
+            storageBatches: mergedBatches,
+            savedSchemeIds: fsSnap.savedSchemeIds,
+            applications: fsSnap.applications,
+            mandiAlerts: fsSnap.mandiAlerts,
+            irrigationSchedules: fsSnap.irrigationSchedules,
+            customCrops: fsSnap.customCrops,
+            notifications: mergedNotifs,
+            users: isAdmin ? users : current.users,
+            auditLogs: auditLogs.length > 0 ? auditLogs : current.auditLogs,
+            settings: {
+              ...baseSettings,
+              language:
+                (!isAdmin ? fsSnap.preferences.language : undefined) ?? baseSettings.language,
+              notificationsEnabled:
+                (!isAdmin ? fsSnap.preferences.notificationsEnabled : undefined) ??
+                baseSettings.notificationsEnabled,
+              compactTables:
+                (!isAdmin ? fsSnap.preferences.compactTables : undefined) ??
+                baseSettings.compactTables,
+              expertReviewSlaHours:
+                (!isAdmin ? fsSnap.preferences.expertReviewSlaHours : undefined) ??
+                baseSettings.expertReviewSlaHours,
+            },
+          }
+        })
+
+        if (isAdmin && auth.currentUser) {
+          if (adminSubUidRef.current !== uid) {
+            adminUnsubRef.current?.()
+            adminSubUidRef.current = uid
+            adminUnsubRef.current = subscribeAdminFirestoreData({
+              onUsers: (liveUsers) =>
+                setState((current) => ({ ...current, users: liveUsers })),
+              onFarms: (liveFarms) =>
+                setState((current) => ({ ...current, farms: liveFarms })),
+              onStorageBatches: (liveBatches) =>
+                setState((current) => ({ ...current, storageBatches: liveBatches })),
+              onCropCases: (liveCases) =>
+                setState((current) => ({ ...current, cases: liveCases })),
+              onNotifications: (liveNotifs) =>
+                setState((current) => ({ ...current, notifications: liveNotifs })),
+              onAuditLogs: (liveLogs) =>
+                setState((current) => ({ ...current, auditLogs: liveLogs })),
+            })
+          }
+        } else {
+          adminUnsubRef.current?.()
+          adminUnsubRef.current = null
+          adminSubUidRef.current = null
+        }
       } catch (err) {
         console.error('Firestore workspace sync failed:', err)
         setState((current) => ({ ...current, backendConnected: false }))
       }
       return
     }
+
+    adminUnsubRef.current?.()
+    adminUnsubRef.current = null
+    adminSubUidRef.current = null
 
     try {
       const [casesRes, mandiRes, schemesRes, storageRes, farmsRes, workspaceRes, auditRes, usersRes] =
@@ -490,6 +653,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ...current,
         cases: [created, ...current.cases.filter((item) => item.id !== created.id)],
       }))
+      addAuditLog(
+        created.farmerName || auth.currentUser?.displayName || 'Farmer',
+        activeRoleRef.current ?? 'farmer',
+        `Submitted ${created.crop} diagnosis case`,
+        created.id,
+      )
       return created
     }
     setState((current) => ({
@@ -497,12 +666,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cases: [cropCase, ...current.cases.filter((item) => item.id !== cropCase.id)],
     }))
     return cropCase
-  }, [])
+  }, [addAuditLog])
 
   const reviewCase = useCallback(
     (id: string, notes: string, guidance: string, status: ReviewStatus, reviewer: string) => {
       const apiStatus: 'in_review' | 'completed' | 'needs_info' =
         status === 'pending' ? 'in_review' : status
+      const nextCaseStatus: CropCase['status'] = apiStatus === 'completed' ? 'resolved' : 'expert_review'
+      const reviewedAt = new Date().toISOString()
+      const targetCase = stateRef.current.cases.find((item) => item.id === id)
 
       setState((current) => ({
         ...current,
@@ -511,15 +683,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
             ? {
                 ...item,
                 reviewStatus: apiStatus,
-                status: apiStatus === 'completed' ? 'resolved' : 'expert_review',
+                status: nextCaseStatus,
                 expertNotes: notes,
                 expertGuidance: guidance,
-                reviewedAt: new Date().toISOString(),
+                reviewedAt,
                 reviewedBy: reviewer,
               }
             : item,
         ),
       }))
+
+      if (isFirebaseSession()) {
+        const ownerId = targetCase?.farmerId || auth.currentUser?.uid
+        if (ownerId) {
+          void updateFirebaseCropCaseReview(ownerId, id, {
+            reviewStatus: apiStatus,
+            status: nextCaseStatus,
+            expertNotes: notes.trim() || 'Reviewed in portal.',
+            expertGuidance: guidance.trim(),
+            reviewedBy: reviewer,
+            reviewedAt,
+          }).catch((err) => {
+            console.error('Failed to persist case review in Firestore:', err)
+          })
+        }
+        return
+      }
 
       if (getAuthToken()) {
         void apiClient
@@ -546,6 +735,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const uid = getFirebaseUid()
       const created = await createFirebaseStorageBatch(uid, batch)
       setState((current) => ({ ...current, storageBatches: [created, ...current.storageBatches] }))
+      addAuditLog(
+        auth.currentUser?.displayName || auth.currentUser?.email || 'Farmer',
+        activeRoleRef.current ?? 'farmer',
+        `Added storage batch ${created.code} (${created.crop})`,
+        created.id,
+      )
       return created
     }
     const res = await apiClient.post<BackendStorageBatch>('/storage-batches', {
@@ -567,7 +762,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const created = mapStorageBatch(res.data, [])
     setState((current) => ({ ...current, storageBatches: [created, ...current.storageBatches] }))
     return created
-  }, [])
+  }, [addAuditLog])
 
   const addInspection = useCallback(async (batchId: string, notes: string, inspector: string) => {
     const prevBatches = stateRef.current.storageBatches
@@ -590,9 +785,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     try {
       if (isFirebaseSession()) {
-        const uid = getFirebaseUid()
+        const ownerUid = target?.ownerId || getFirebaseUid()
         const updatedBatch = nextBatches.find((b) => b.id === batchId)
-        await updateFirebaseStorageInspections(uid, batchId, updatedBatch?.inspections ?? [newInspection])
+        await updateFirebaseStorageInspections(ownerUid, batchId, updatedBatch?.inspections ?? [newInspection])
         return
       }
       const res = await apiClient.post<BackendInspection>(
@@ -633,8 +828,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       source: 'manual' | 'simulated' = 'simulated',
     ): Promise<{ batchStatus: StorageStatus }> => {
       if (isFirebaseSession()) {
-        const uid = getFirebaseUid()
         const target = stateRef.current.storageBatches.find((b) => b.id === batchId)
+        const ownerUid = target?.ownerId || getFirebaseUid()
         const maxTemp = target?.maxTemp ?? 28
         const minTemp = target?.minTemp ?? 4
         const maxHumidity = target?.maxHumidity ?? 70
@@ -644,7 +839,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             : tempC > maxTemp - 2 || humidity > maxHumidity - 5
               ? 'warning'
               : 'normal'
-        await updateFirebaseStorageBatchReading(uid, batchId, tempC, humidity, batchStatus)
+        await updateFirebaseStorageBatchReading(ownerUid, batchId, tempC, humidity, batchStatus)
         setState((current) => ({
           ...current,
           storageBatches: current.storageBatches.map((batch) =>
@@ -676,6 +871,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const addMandiPrice = useCallback(async (input: MandiPriceCreateInput): Promise<MandiPrice> => {
+    if (isFirebaseSession()) {
+      const uid = getFirebaseUid()
+      const created = await createFirebaseMandiPrice(uid, input)
+      setState((current) => ({
+        ...current,
+        mandiPrices: [created, ...current.mandiPrices.filter((item) => item.id !== created.id)],
+      }))
+      return created
+    }
     const res = await apiClient.post<BackendMandiPrice>('/mandi/prices', {
       ...input,
       unit: 'INR/quintal',
@@ -698,6 +902,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ...current,
           soilReadings: [reading, ...current.soilReadings],
         }))
+        addAuditLog(
+          auth.currentUser?.displayName || auth.currentUser?.email || 'Farmer',
+          activeRoleRef.current ?? 'farmer',
+          `Logged ${input.soilMoisture}% soil moisture reading`,
+          farmId,
+        )
         return reading
       }
       const res = await apiClient.post<BackendSoilReading>(
@@ -710,7 +920,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }))
       return res.data
     },
-    [],
+    [addAuditLog],
   )
 
   const createFarm = useCallback(async (input: FarmCreateInput): Promise<BackendFarm> => {
@@ -721,6 +931,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         ...current,
         farms: [created, ...current.farms.filter((farm) => farm.id !== created.id)],
       }))
+      addAuditLog(
+        auth.currentUser?.displayName || auth.currentUser?.email || 'Farmer',
+        activeRoleRef.current ?? 'farmer',
+        `Registered farm ${created.name}`,
+        created.id,
+      )
       return created
     }
     const res = await apiClient.post<BackendFarm>('/farms', input)
@@ -729,12 +945,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       farms: [res.data, ...current.farms.filter((farm) => farm.id !== res.data.id)],
     }))
     return res.data
-  }, [])
+  }, [addAuditLog])
 
   const updateFarm = useCallback(async (farmId: string, patch: FarmUpdateInput): Promise<BackendFarm> => {
     if (isFirebaseSession()) {
-      const uid = getFirebaseUid()
-      await updateFirebaseFarm(uid, farmId, patch)
+      const target = stateRef.current.farms.find((f) => f.id === farmId)
+      const ownerUid = target?.farmerId || getFirebaseUid()
+      await updateFirebaseFarm(ownerUid, farmId, patch)
       let updatedFarm: BackendFarm | null = null
       setState((current) => ({
         ...current,
@@ -757,9 +974,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const updateFarmPlots = useCallback(
     async (farmId: string, plots: BackendFarm['plots']): Promise<BackendFarm> => {
       if (isFirebaseSession()) {
-        const uid = getFirebaseUid()
+        const target = stateRef.current.farms.find((f) => f.id === farmId)
+        const ownerUid = target?.farmerId || getFirebaseUid()
         const totalArea = Number(plots.reduce((sum, p) => sum + Number(p.areaHa ?? 0), 0).toFixed(2))
-        await updateFirebaseFarm(uid, farmId, { plots, areaHa: totalArea })
+        await updateFirebaseFarm(ownerUid, farmId, { plots, areaHa: totalArea })
         let updatedFarm: BackendFarm | null = null
         setState((current) => ({
           ...current,
@@ -823,6 +1041,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const createScheme = useCallback(async (input: SchemeCreateInput): Promise<Scheme> => {
+    if (isFirebaseSession()) {
+      const uid = getFirebaseUid()
+      const created = await createFirebaseScheme(uid, input)
+      setState((current) => ({
+        ...current,
+        schemes: [created, ...current.schemes.filter((s) => s.id !== created.id)],
+      }))
+      return created
+    }
     const res = await apiClient.post<Scheme & Record<string, unknown>>('/schemes', {
       ...input,
       dataType: input.dataType ?? 'sample',
@@ -1013,12 +1240,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   )
 
   const markNotificationRead = useCallback((id: string) => {
+    const target = stateRef.current.notifications.find((item) => item.id === id)
     setState((current) => ({
       ...current,
       notifications: current.notifications.map((item) => (item.id === id ? { ...item, read: true } : item)),
     }))
     if (isFirebaseSession()) {
-      const uid = auth.currentUser?.uid
+      const uid = target?.ownerId || auth.currentUser?.uid
       if (uid) {
         void markFirebaseNotificationRead(uid, id).catch(() => {})
       }
@@ -1030,9 +1258,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const markAllNotificationsRead = useCallback((audience: Role | 'all') => {
-    const unreadIds = stateRef.current.notifications
+    const unreadTargets = stateRef.current.notifications
       .filter((item) => !item.read && (item.audience === audience || item.audience === 'all'))
-      .map((item) => item.id)
     setState((current) => ({
       ...current,
       notifications: current.notifications.map((item) =>
@@ -1042,8 +1269,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (isFirebaseSession()) {
       const uid = auth.currentUser?.uid
       if (uid) {
-        unreadIds.forEach((id) => {
-          void markFirebaseNotificationRead(uid, id).catch(() => {})
+        unreadTargets.forEach((item) => {
+          void markFirebaseNotificationRead(item.ownerId || uid, item.id).catch(() => {})
         })
       }
       return
@@ -1138,6 +1365,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       try {
         if (isFirebaseSession()) {
+          const uid = getFirebaseUid()
           await persistWorkspace({
             preferences: {
               language: merged.language,
@@ -1146,6 +1374,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
               expertReviewSlaHours: merged.expertReviewSlaHours,
             },
           })
+          if (activeRoleRef.current === 'admin') {
+            const saved = await saveFirebasePlatformSettings(uid, merged)
+            stateRef.current = { ...stateRef.current, settings: saved }
+            setState((current) => ({ ...current, settings: saved }))
+          }
           return
         }
         if (!getAuthToken()) {
@@ -1221,6 +1454,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           ...current,
           users: current.users.map((user) => (user.id === id ? { ...user, status } : user)),
         }))
+        if (isFirebaseSession()) {
+          void updateFirebaseUserStatus(id, status).catch((err) => {
+            console.error('Failed to update user status in Firestore:', err)
+          })
+          return
+        }
         if (getAuthToken()) {
           void apiClient.post<DemoUser>(`/admin/users/${encodeURIComponent(id)}/status`, { status }).catch(() => {})
         }
@@ -1231,6 +1470,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           users: [user, ...current.users.filter((existing) => existing.id !== user.id)],
         })),
       createUserAccount: async (input) => {
+        if (isFirebaseSession()) {
+          const created = await createFirebaseDirectoryUser(input)
+          setState((current) => ({
+            ...current,
+            users: [created, ...current.users.filter((existing) => existing.id !== created.id)],
+          }))
+          return created
+        }
         const res = await apiClient.post<DemoUser>('/admin/users', input)
         setState((current) => ({
           ...current,

@@ -5,7 +5,7 @@ import { withHttp } from '../middleware/withHttp';
 import { runKrishiCopilotChat, runLiveIntelligenceBrief } from '../services/ai/copilot';
 import { createAiService } from '../services/ai/factory';
 import type { AiAnalysisService } from '../services/ai/types';
-import { ServiceUnavailableError } from '../utils/errors';
+import { AppError, ServiceUnavailableError } from '../utils/errors';
 import type { Route } from './router';
 import { lazyRouter } from './router';
 
@@ -36,6 +36,29 @@ export const chatBodySchema = z.object({
       openCasesCount: z.number().int().min(0).max(500).optional(),
       criticalStorageCount: z.number().int().min(0).max(500).optional(),
       activeAlertsCount: z.number().int().min(0).max(500).optional(),
+      recentCases: z
+        .array(
+          z.object({
+            id: z.string().trim().max(64),
+            crop: z.string().trim().max(80),
+            condition: z.string().trim().max(160),
+            reviewStatus: z.string().trim().max(40),
+          }),
+        )
+        .max(6)
+        .optional(),
+      criticalBatches: z
+        .array(
+          z.object({
+            code: z.string().trim().max(64),
+            crop: z.string().trim().max(80),
+            tempC: z.number(),
+            humidity: z.number(),
+            status: z.string().trim().max(40),
+          }),
+        )
+        .max(6)
+        .optional(),
     })
     .optional(),
 });
@@ -59,9 +82,10 @@ export function buildAiRoutes(config: AppConfig, aiService: AiAnalysisService = 
           const region = ctx.body?.region;
           return { data: await runLiveIntelligenceBrief(region || 'Nashik, Maharashtra') };
         } catch (err) {
+          if (err instanceof AppError) throw err;
           throw new ServiceUnavailableError(
             'AI_LIVE_INTELLIGENCE_UNAVAILABLE',
-            err instanceof Error && err.message.includes('not configured')
+            err instanceof Error
               ? err.message
               : 'Unable to fetch grounded agricultural intelligence from Gemini right now.',
           );
@@ -75,9 +99,10 @@ export function buildAiRoutes(config: AppConfig, aiService: AiAnalysisService = 
         try {
           return { data: await runKrishiCopilotChat(ctx.body) };
         } catch (err) {
+          if (err instanceof AppError) throw err;
           throw new ServiceUnavailableError(
             'AI_CHAT_UNAVAILABLE',
-            err instanceof Error && err.message.includes('not configured')
+            err instanceof Error
               ? err.message
               : 'KRISHI360 AI Copilot could not reach Gemini right now. Please try again.',
           );

@@ -26,12 +26,22 @@ import { DataTable, type Column } from '../../components/ui/Table'
 import { Tabs, type TabItem } from '../../components/ui/Tabs'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
+import { auth } from '../../lib/firebase'
+import { getAuthToken } from '../../services/apiClient'
 import {
   backendService,
   type BackendEndpointInfo,
   type BackendEntityName,
   type BackendStatusSnapshot,
 } from '../../services/backendService'
+import {
+  exportFirestoreSnapshot,
+  fetchUserFirestoreSnapshot,
+  getFirebasePlatformSettings,
+  inspectFirestoreDatabase,
+  listFirestoreRecordsByEntity,
+  seedFirestoreSampleData,
+} from '../../services/firestoreService'
 import { useApp } from '../../services/store'
 import { formatDateTime } from '../../services/utils'
 
@@ -115,9 +125,12 @@ function summarizeRecord(entity: BackendEntityName, row: Record<string, unknown>
 }
 
 export function BackendDatabasePage() {
-  const { user } = useAuth()
+  const { user, authProvider } = useAuth()
   const { syncBackendData, backendConnected } = useApp()
   const { show } = useToast()
+  const isFirestoreMode = authProvider === 'firebase' || (!getAuthToken() && Boolean(auth.currentUser))
+  const firebaseUid = auth.currentUser?.uid || user?.id || ''
+  const isAdminUser = user?.role === 'admin'
 
   const [activeTab, setActiveTab] = useState<'overview' | 'records' | 'endpoints'>('overview')
   const [status, setStatus] = useState<BackendStatusSnapshot | null>(null)
@@ -142,21 +155,31 @@ export function BackendDatabasePage() {
     if (!quiet) setLoading(true)
     setErrorMsg(null)
     try {
-      const next = await backendService.getStatus()
-      setStatus(next)
+      if (isFirestoreMode && firebaseUid) {
+        const next = await inspectFirestoreDatabase(firebaseUid, isAdminUser)
+        setStatus(next)
+      } else {
+        const next = await backendService.getStatus()
+        setStatus(next)
+      }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Unable to reach backend status endpoint.'
+      const msg = err instanceof Error ? err.message : 'Unable to inspect database status.'
       setErrorMsg(msg)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [firebaseUid, isAdminUser, isFirestoreMode])
 
   const loadRecords = useCallback(async (entity: BackendEntityName) => {
     setRecordsLoading(true)
     try {
-      const res = await backendService.listRecords(entity, 25)
-      setRecords(res.items)
+      if (isFirestoreMode && firebaseUid) {
+        const items = await listFirestoreRecordsByEntity(firebaseUid, isAdminUser, entity, 25)
+        setRecords(items)
+      } else {
+        const res = await backendService.listRecords(entity, 25)
+        setRecords(res.items)
+      }
     } catch (err) {
       setRecords([])
       show(
@@ -167,7 +190,7 @@ export function BackendDatabasePage() {
     } finally {
       setRecordsLoading(false)
     }
-  }, [show])
+  }, [firebaseUid, isAdminUser, isFirestoreMode, show])
 
   useEffect(() => {
     void loadStatus()
@@ -195,6 +218,16 @@ export function BackendDatabasePage() {
   const handleHealthCheck = async () => {
     setBusyAction('health')
     try {
+      if (isFirestoreMode && firebaseUid) {
+        const next = await inspectFirestoreDatabase(firebaseUid, isAdminUser)
+        setStatus(next)
+        show(
+          next.firestore?.serverReachable ? 'Cloud Firestore OK' : 'Firestore connectivity warning',
+          next.firestore?.message ?? next.dynamo.message,
+          next.firestore?.serverReachable ? 'success' : 'warning',
+        )
+        return
+      }
       const next = await backendService.healthCheck()
       setStatus(next)
       if (next.sqlite) {
@@ -220,7 +253,10 @@ export function BackendDatabasePage() {
   const handleExportSnapshot = async () => {
     setBusyAction('export')
     try {
-      const snapshot = await backendService.exportSnapshot()
+      const snapshot =
+        isFirestoreMode && firebaseUid
+          ? await exportFirestoreSnapshot(firebaseUid, isAdminUser)
+          : await backendService.exportSnapshot()
       const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' })
       const url = URL.createObjectURL(blob)
       const link = document.createElement('a')
@@ -262,9 +298,16 @@ export function BackendDatabasePage() {
   const handleSeed = async () => {
     setBusyAction('seed')
     try {
-      const next = await backendService.seedDatabase('missing')
+      const next =
+        isFirestoreMode && firebaseUid
+          ? await seedFirestoreSampleData(firebaseUid, isAdminUser)
+          : await backendService.seedDatabase('missing')
       setStatus(next)
-      await syncBackendData(user ? { id: user.id, role: user.role, name: user.name } : null)
+      await syncBackendData(
+        user
+          ? { id: user.id, role: user.role, name: user.name, provider: authProvider ?? undefined }
+          : null,
+      )
       if (activeTab === 'records') await loadRecords(selectedEntity)
       const detail = next.seedResult
         ? `${next.seedResult.inserted} added, ${next.seedResult.skipped} preserved in ${next.dataBackend.toUpperCase()}.`
@@ -283,10 +326,14 @@ export function BackendDatabasePage() {
 
   const handleSyncPortal = async () => {
     setBusyAction('sync')
-    await syncBackendData(user ? { id: user.id, role: user.role, name: user.name } : null)
+    await syncBackendData(
+      user
+        ? { id: user.id, role: user.role, name: user.name, provider: authProvider ?? undefined }
+        : null,
+    )
     await loadStatus(true)
     setBusyAction(null)
-    show('Modules synced', 'All portal modules synchronized with backend database.')
+    show('Modules synced', 'All portal modules synchronized with active database.')
   }
 
   const handleTestEndpoint = async (endpoint: BackendEndpointInfo) => {
@@ -294,6 +341,39 @@ export function BackendDatabasePage() {
     setTestingPath(endpoint.path)
     setTestedPath(endpoint.path)
     try {
+      if (endpoint.path.startsWith('firestore:/') && firebaseUid) {
+        const started = performance.now()
+        let payload: unknown
+        if (endpoint.path.includes('/workspace/state')) {
+          const snap = await fetchUserFirestoreSnapshot(firebaseUid)
+          payload = {
+            savedSchemeIds: snap.savedSchemeIds,
+            applications: snap.applications,
+            mandiAlerts: snap.mandiAlerts,
+            irrigationSchedules: snap.irrigationSchedules,
+            customCrops: snap.customCrops,
+            preferences: snap.preferences,
+          }
+        } else if (endpoint.path.includes('/farms')) {
+          payload = await listFirestoreRecordsByEntity(firebaseUid, isAdminUser, 'farms', 10)
+        } else if (endpoint.path.includes('/storageBatches')) {
+          payload = await listFirestoreRecordsByEntity(firebaseUid, isAdminUser, 'storageBatches', 10)
+        } else if (endpoint.path.includes('/cropCases')) {
+          payload = await listFirestoreRecordsByEntity(firebaseUid, isAdminUser, 'cropCases', 10)
+        } else if (endpoint.path.includes('/mandiPrices')) {
+          payload = await listFirestoreRecordsByEntity(firebaseUid, isAdminUser, 'mandiPrices', 10)
+        } else if (endpoint.path.includes('/schemes')) {
+          payload = await listFirestoreRecordsByEntity(firebaseUid, isAdminUser, 'schemes', 10)
+        } else if (endpoint.path.includes('/platform/settings')) {
+          payload = await getFirebasePlatformSettings()
+        } else {
+          payload = await listFirestoreRecordsByEntity(firebaseUid, isAdminUser, 'auditLogs', 10)
+        }
+        const durationMs = Math.round(performance.now() - started)
+        setTestResult({ path: endpoint.path, durationMs, payload })
+        show('Collection queried', `${endpoint.path} responded in ${durationMs}ms.`, 'success')
+        return
+      }
       const res = await backendService.testGetEndpoint(endpoint.path)
       setTestResult({ path: endpoint.path, ...res })
       show('Endpoint responded', `${endpoint.path} returned 200 OK in ${res.durationMs}ms.`, 'success')
@@ -392,21 +472,126 @@ export function BackendDatabasePage() {
   ]
 
   const engineLabel =
-    status?.dataBackend === 'dynamodb'
-      ? 'AWS DynamoDB'
-      : status?.dataBackend === 'sqlite'
-        ? 'SQLite Single-Table (WAL)'
-        : 'In-Memory'
+    status?.dataBackend === 'firestore'
+      ? 'Cloud Firestore'
+      : status?.dataBackend === 'dynamodb'
+        ? 'AWS DynamoDB'
+        : status?.dataBackend === 'sqlite'
+          ? 'SQLite Single-Table (WAL)'
+          : 'In-Memory'
+
+  const headerBadgeText = status
+    ? status.firestore
+      ? `FIRESTORE · ${status.firestore.projectId}`
+      : `${status.dataBackend.toUpperCase()} · ${status.awsRegion}`
+    : 'Connecting…'
+
+  const envReadinessItems = status?.firestore
+    ? [
+        {
+          key: 'DATA_BACKEND',
+          value: 'firestore',
+          ready: status.firestore.serverReachable,
+        },
+        {
+          key: 'AUTH_MODE',
+          value: 'firebase-google',
+          ready: true,
+        },
+        {
+          key: 'FIREBASE_PROJECT_ID',
+          value: status.firestore.projectId,
+          ready: true,
+        },
+        {
+          key: 'FIRESTORE_DATABASE_ID',
+          value: status.firestore.databaseId,
+          ready: status.firestore.serverReachable,
+        },
+        {
+          key: 'FIRESTORE_CONNECTION',
+          value: status.firestore.serverReachable ? 'Server reachable' : 'Offline / unreachable',
+          ready: status.firestore.serverReachable,
+        },
+        {
+          key: 'AI_PROVIDER',
+          value: 'Gemini AI (with local heuristic fallback)',
+          ready: true,
+        },
+      ]
+    : [
+        {
+          key: 'DATA_BACKEND',
+          value: status?.dataBackend ?? (isFirestoreMode ? 'firestore' : 'sqlite'),
+          ready: status?.dataBackend !== 'memory',
+        },
+        ...(status?.sqlite
+          ? [
+              {
+                key: 'SQLITE_WAL_ITEMS',
+                value: `${status.sqlite.totalItems} rows · ${status.sqlite.journalMode}`,
+                ready: status.sqlite.integrityOk,
+              },
+            ]
+          : []),
+        {
+          key: 'AWS_REGION',
+          value: status?.awsRegion ?? 'ap-south-1',
+          ready: true,
+        },
+        {
+          key: 'DYNAMODB_USERS_TABLE_NAME',
+          value: status?.usersTableName ?? 'krishi360-users-dev',
+          ready: true,
+        },
+        {
+          key: 'DYNAMODB_FLAG_TABLE_NAME',
+          value: status?.flagTableName ?? 'krishi360-flag-dev',
+          ready: true,
+        },
+        {
+          key: 'AWS_ACCESS_KEY_ID / IAM_ROLE',
+          value: status?.awsCredentialsConfigured ? 'Configured on server' : 'Not set (using SQLite)',
+          ready: Boolean(status?.awsCredentialsConfigured),
+        },
+        {
+          key: 'UPLOAD_BUCKET_NAME (S3)',
+          value: status?.s3?.reachable
+            ? `${status.s3.bucketName} · ACTIVE`
+            : status?.s3UploadsConfigured
+              ? `${status.uploadBucketName} · ${status.s3?.status ?? 'PENDING'}`
+              : 'Optional / local mode',
+          ready: Boolean(status?.s3?.reachable),
+        },
+        {
+          key: 'BEDROCK_MODEL_ID',
+          value: status?.bedrockConfigured
+            ? status.bedrockModelId
+            : status?.aiProvider === 'gemini'
+              ? 'Using Gemini API'
+              : 'Not configured',
+          ready: Boolean(status?.bedrockConfigured || status?.aiProvider === 'gemini'),
+        },
+        {
+          key: 'AUTH_MODE',
+          value: status?.authMode ?? (isFirestoreMode ? 'firebase-google' : 'dev'),
+          ready: true,
+        },
+      ]
 
   return (
     <div>
     <PageHeader
         eyebrow="Infrastructure & Persistence"
-        title="Backend & 2-Table Database"
-        description="Inspect 2-table persistence: Table 1 stores only user login details, while Table 2 (Flag Table) stores user profiles, platform flags, and all domain collections."
+        title={status?.firestore ? 'Cloud Firestore Database' : 'Backend & 2-Table Database'}
+        description={
+          status?.firestore
+            ? 'Inspect live Cloud Firestore persistence across owner-isolated user workspaces and shared agricultural catalogues.'
+            : 'Inspect 2-table persistence: Table 1 stores only user login details, while Table 2 (Flag Table) stores user profiles, platform flags, and all domain collections.'
+        }
         badge={
           <Badge tone={status?.dataBackend === 'memory' ? 'sage' : 'forest'}>
-            {status ? `${status.dataBackend.toUpperCase()} · ${status.awsRegion}` : 'Connecting…'}
+            {headerBadgeText}
           </Badge>
         }
         actions={
@@ -476,26 +661,48 @@ export function BackendDatabasePage() {
         <StatCard
           label="Active Engine"
           value={status ? engineLabel : '—'}
-          detail={backendConnected ? 'Frontend synced with backend DB' : 'Connecting portal store'}
+          detail={
+            backendConnected
+              ? status?.firestore
+                ? 'Frontend synced with Cloud Firestore'
+                : 'Frontend synced with backend DB'
+              : 'Connecting portal store'
+          }
           icon={<Server size={18} />}
           tone={status?.dataBackend === 'memory' ? 'sage' : 'forest'}
         />
         <StatCard
-          label={status?.sqlite ? 'SQLite Storage' : 'DynamoDB Tables (2)'}
+          label={
+            status?.firestore
+              ? 'Firestore Database'
+              : status?.sqlite
+                ? 'SQLite Storage'
+                : 'DynamoDB Tables (2)'
+          }
           value={
-            status?.sqlite
-              ? `${(status.sqlite.fileSizeBytes / 1024).toFixed(1)} KB`
-              : `${status?.usersTableName ?? 'krishi360-users-dev'} + ${status?.flagTableName ?? 'krishi360-flag-dev'}`
+            status?.firestore
+              ? status.firestore.projectId
+              : status?.sqlite
+                ? `${(status.sqlite.fileSizeBytes / 1024).toFixed(1)} KB`
+                : `${status?.usersTableName ?? 'krishi360-users-dev'} + ${status?.flagTableName ?? 'krishi360-flag-dev'}`
           }
           detail={
-            status?.sqlite
-              ? `${status.sqlite.usersItems} login + ${status.sqlite.flagItems} flag items`
-              : status
-                ? `${status.dynamo.tableStatus} · ${status.awsRegion}`
-                : 'Checking storage'
+            status?.firestore
+              ? `${status.firestore.serverReachable ? 'ACTIVE' : 'OFFLINE'} · ${status.firestore.databaseId}`
+              : status?.sqlite
+                ? `${status.sqlite.usersItems} login + ${status.sqlite.flagItems} flag items`
+                : status
+                  ? `${status.dynamo.tableStatus} · ${status.awsRegion}`
+                  : 'Checking storage'
           }
           icon={status?.sqlite ? <HardDrive size={18} /> : <Database size={18} />}
-          tone={status?.sqlite?.integrityOk || status?.dynamo.tableStatus === 'ACTIVE' ? 'forest' : 'neutral'}
+          tone={
+            status?.firestore?.serverReachable ||
+            status?.sqlite?.integrityOk ||
+            status?.dynamo.tableStatus === 'ACTIVE'
+              ? 'forest'
+              : 'neutral'
+          }
         />
         <StatCard
           label="Stored Records"
@@ -505,17 +712,25 @@ export function BackendDatabasePage() {
           tone="sage"
         />
         <StatCard
-          label="AI & S3 Media"
+          label={status?.firestore ? 'AI & Auth Mode' : 'AI & S3 Media'}
           value={status ? status.aiProvider.toUpperCase() : '—'}
           detail={
-            status?.s3?.reachable
-              ? `S3 active (${status.s3.bucketName})`
-              : status?.s3UploadsConfigured
-                ? `S3 ${status.s3?.status ?? 'configured'}`
-                : 'Local / simulated media mode'
+            status?.firestore
+              ? 'Google Firebase Auth · Cloud Firestore'
+              : status?.s3?.reachable
+                ? `S3 active (${status.s3.bucketName})`
+                : status?.s3UploadsConfigured
+                  ? `S3 ${status.s3?.status ?? 'configured'}`
+                  : 'Local / simulated media mode'
           }
           icon={<Cloud size={18} />}
-          tone={status?.awsCredentialsConfigured || status?.s3?.reachable ? 'forest' : 'neutral'}
+          tone={
+            status?.firestore?.serverReachable ||
+            status?.awsCredentialsConfigured ||
+            status?.s3?.reachable
+              ? 'forest'
+              : 'neutral'
+          }
         />
       </div>
 
@@ -540,11 +755,23 @@ export function BackendDatabasePage() {
         <div className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
           <Card>
             <CardHeader
-              title="2-table DynamoDB & SQLite architecture"
-              description="Table 1 stores only user login details (credentials, email & role lookups); Table 2 (Flag Table) stores user profiles, flags, and all module collections."
+              title={
+                status?.firestore
+                  ? 'Cloud Firestore document & security architecture'
+                  : '2-table DynamoDB & SQLite architecture'
+              }
+              description={
+                status?.firestore
+                  ? 'PII profiles and farmer workspaces are owner-isolated under users/{uid}, while shared catalogues enforce verified admin writes.'
+                  : 'Table 1 stores only user login details (credentials, email & role lookups); Table 2 (Flag Table) stores user profiles, flags, and all module collections.'
+              }
               icon={<Database size={18} />}
               action={
-                status?.sqlite ? (
+                status?.firestore ? (
+                  <Badge tone={status.firestore.serverReachable ? 'forest' : 'critical'}>
+                    {status.firestore.serverReachable ? 'Cloud Firestore Active' : 'Offline'}
+                  </Badge>
+                ) : status?.sqlite ? (
                   <Badge tone={status.sqlite.integrityOk ? 'forest' : 'critical'}>
                     {status.sqlite.integrityOk ? 'SQLite WAL Active' : 'Integrity Warning'}
                   </Badge>
@@ -563,22 +790,26 @@ export function BackendDatabasePage() {
             <div className="mb-4 grid gap-3 sm:grid-cols-2">
               <div className="rounded-2xl border border-line/80 bg-soft-sage/30 px-4 py-3 text-xs leading-relaxed text-ink">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="font-bold text-forest">Table 1 · Users Login</p>
+                  <p className="font-bold text-forest">
+                    {status?.firestore ? 'Auth & Private PII Profiles' : 'Table 1 · Users Login'}
+                  </p>
                   {status ? <StatusPill status={status.usersDynamo.tableStatus} /> : null}
                 </div>
                 <p className="mt-1 font-mono text-[11px] text-ink">{status?.usersTableName ?? 'krishi360-users-dev'}</p>
                 <p className="mt-1 text-muted">
-                  {status?.usersDynamo.message ?? 'Loading user login table status...'}
+                  {status?.usersDynamo.message ?? 'Loading user table status...'}
                 </p>
               </div>
               <div className="rounded-2xl border border-line/80 bg-soft-sage/30 px-4 py-3 text-xs leading-relaxed text-ink">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="font-bold text-forest">Table 2 · Flag & Domain Data</p>
+                  <p className="font-bold text-forest">
+                    {status?.firestore ? 'Firestore Database Instance' : 'Table 2 · Flag & Domain Data'}
+                  </p>
                   {status ? <StatusPill status={status.flagDynamo.tableStatus} /> : null}
                 </div>
                 <p className="mt-1 font-mono text-[11px] text-ink">{status?.flagTableName ?? 'krishi360-flag-dev'}</p>
                 <p className="mt-1 text-muted">
-                  {status?.flagDynamo.message ?? 'Loading flag table status...'}
+                  {status?.flagDynamo.message ?? 'Loading database status...'}
                 </p>
               </div>
             </div>
@@ -586,19 +817,27 @@ export function BackendDatabasePage() {
               <table className="w-full min-w-[640px] border-collapse text-left text-xs">
                 <thead>
                   <tr className="bg-soft-sage/45 text-[11px] font-extrabold tracking-[0.08em] text-muted uppercase">
-                    <th className="px-3.5 py-3">Table</th>
+                    <th className="px-3.5 py-3">{status?.firestore ? 'Scope' : 'Table'}</th>
                     <th className="px-3.5 py-3">Entity</th>
-                    <th className="px-3.5 py-3">PK</th>
-                    <th className="px-3.5 py-3">SK</th>
-                    <th className="px-3.5 py-3">GSI1</th>
-                    <th className="px-3.5 py-3">GSI2</th>
+                    <th className="px-3.5 py-3">{status?.firestore ? 'Document Path' : 'PK'}</th>
+                    <th className="px-3.5 py-3">{status?.firestore ? 'Key Fields' : 'SK'}</th>
+                    <th className="px-3.5 py-3">{status?.firestore ? 'Access Gate' : 'GSI1'}</th>
+                    <th className="px-3.5 py-3">{status?.firestore ? 'Sub-Index / Group' : 'GSI2'}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line/70 bg-white/70">
                   {(status?.singleTableSchema ?? []).map((row) => (
                     <tr key={`${row.table}-${row.entity}`} className="hover:bg-soft-sage/20">
                       <td className="px-3.5 py-2.5">
-                        <Badge tone={row.table === 'Users Login Table' ? 'forest' : 'sage'}>{row.table}</Badge>
+                        <Badge
+                          tone={
+                            row.table === 'Users Login Table' || row.table === 'Root Collection'
+                              ? 'forest'
+                              : 'sage'
+                          }
+                        >
+                          {row.table}
+                        </Badge>
                       </td>
                       <td className="px-3.5 py-2.5 font-bold text-ink">{row.entity}</td>
                       <td className="px-3.5 py-2.5 font-mono text-forest">{row.pkPattern}</td>
@@ -641,70 +880,16 @@ export function BackendDatabasePage() {
 
             <Card>
               <CardHeader
-                title="Server environment readiness"
-                description="Managed exclusively via server environment variables & Secrets — never entered in browser UI."
+                title={status?.firestore ? 'Cloud Firestore environment' : 'Server environment readiness'}
+                description={
+                  status?.firestore
+                    ? 'Active Firebase & Cloud Firestore runtime configuration.'
+                    : 'Managed exclusively via server environment variables & Secrets — never entered in browser UI.'
+                }
                 icon={<ShieldCheck size={18} />}
               />
               <div className="space-y-2.5 text-xs">
-                {[
-                  {
-                    key: 'DATA_BACKEND',
-                    value: status?.dataBackend ?? 'sqlite',
-                    ready: status?.dataBackend !== 'memory',
-                  },
-                  ...(status?.sqlite
-                    ? [
-                        {
-                          key: 'SQLITE_WAL_ITEMS',
-                          value: `${status.sqlite.totalItems} rows · ${status.sqlite.journalMode}`,
-                          ready: status.sqlite.integrityOk,
-                        },
-                      ]
-                    : []),
-                  {
-                    key: 'AWS_REGION',
-                    value: status?.awsRegion ?? 'ap-south-1',
-                    ready: true,
-                  },
-                  {
-                    key: 'DYNAMODB_USERS_TABLE_NAME',
-                    value: status?.usersTableName ?? 'krishi360-users-dev',
-                    ready: true,
-                  },
-                  {
-                    key: 'DYNAMODB_FLAG_TABLE_NAME',
-                    value: status?.flagTableName ?? 'krishi360-flag-dev',
-                    ready: true,
-                  },
-                  {
-                    key: 'AWS_ACCESS_KEY_ID / IAM_ROLE',
-                    value: status?.awsCredentialsConfigured ? 'Configured on server' : 'Not set (using SQLite)',
-                    ready: Boolean(status?.awsCredentialsConfigured),
-                  },
-                  {
-                    key: 'UPLOAD_BUCKET_NAME (S3)',
-                    value: status?.s3?.reachable
-                      ? `${status.s3.bucketName} · ACTIVE`
-                      : status?.s3UploadsConfigured
-                        ? `${status.uploadBucketName} · ${status.s3?.status ?? 'PENDING'}`
-                        : 'Optional / local mode',
-                    ready: Boolean(status?.s3?.reachable),
-                  },
-                  {
-                    key: 'BEDROCK_MODEL_ID',
-                    value: status?.bedrockConfigured
-                      ? status.bedrockModelId
-                      : status?.aiProvider === 'gemini'
-                        ? 'Using Gemini API'
-                        : 'Not configured',
-                    ready: Boolean(status?.bedrockConfigured || status?.aiProvider === 'gemini'),
-                  },
-                  {
-                    key: 'AUTH_MODE',
-                    value: status?.authMode ?? 'dev',
-                    ready: true,
-                  },
-                ].map((item) => (
+                {envReadinessItems.map((item) => (
                   <div
                     key={item.key}
                     className="flex items-center justify-between gap-3 rounded-xl border border-line/70 bg-white/60 px-3.5 py-2.5"
@@ -730,11 +915,13 @@ export function BackendDatabasePage() {
           <CardHeader
             title="Live repository records"
             description={`Showing live records queried from ${
-              status?.dataBackend === 'dynamodb'
-                ? `AWS DynamoDB (${status.usersTableName} + ${status.flagTableName})`
-                : status?.dataBackend === 'sqlite'
-                  ? `persistent 2-table SQLite database (${status.sqlite?.dbPath ?? '.data/krishi360.db'})`
-                  : 'local Memory repository'
+              status?.dataBackend === 'firestore'
+                ? `Cloud Firestore (${status.firestore?.databaseId ?? status.flagTableName})`
+                : status?.dataBackend === 'dynamodb'
+                  ? `AWS DynamoDB (${status.usersTableName} + ${status.flagTableName})`
+                  : status?.dataBackend === 'sqlite'
+                    ? `persistent 2-table SQLite database (${status.sqlite?.dbPath ?? '.data/krishi360.db'})`
+                    : 'local Memory repository'
             }. Click any row to inspect JSON.`}
             icon={<Table2 size={18} />}
             action={
@@ -783,8 +970,12 @@ export function BackendDatabasePage() {
         <div className="mt-6 grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <Card>
             <CardHeader
-              title="Connected Express & Lambda API routes"
-              description="Execute live authenticated requests against the backend server."
+              title={status?.firestore ? 'Connected Cloud Firestore collections' : 'Connected Express & Lambda API routes'}
+              description={
+                status?.firestore
+                  ? 'Run live Firestore collection queries directly against your active database.'
+                  : 'Execute live authenticated requests against the backend server.'
+              }
               icon={<Terminal size={18} />}
             />
             <DataTable

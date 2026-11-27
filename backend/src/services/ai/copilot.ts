@@ -1,4 +1,5 @@
-import { GoogleGenAI, ThinkingLevel, type Content } from '@google/genai';
+import { GoogleGenAI, ThinkingLevel, type Content, type GenerateContentResponse } from '@google/genai';
+import { ServiceUnavailableError } from '../../utils/errors';
 import { containsDosageInstruction } from './bedrock';
 
 export interface GroundingSource {
@@ -18,6 +19,19 @@ export interface CopilotTurnInput {
     openCasesCount?: number;
     criticalStorageCount?: number;
     activeAlertsCount?: number;
+    recentCases?: Array<{
+      id: string;
+      crop: string;
+      condition: string;
+      reviewStatus: string;
+    }>;
+    criticalBatches?: Array<{
+      code: string;
+      crop: string;
+      tempC: number;
+      humidity: number;
+      status: string;
+    }>;
   };
 }
 
@@ -41,16 +55,76 @@ export interface LiveIntelligenceResult {
   groundingSources: GroundingSource[];
   searchQueries: string[];
   modelUsed: string;
+  searchGrounded: boolean;
+  groundingNotice?: string;
   generatedAt: string;
 }
 
 const COPILOT_DISCLAIMER =
   'AI advisory triage only — verify field, storage, and market decisions with local agronomy experts and official mandi/government sources.';
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getHttpStatus(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const candidate = err as { status?: unknown; code?: unknown };
+  if (typeof candidate.status === 'number') return candidate.status;
+  if (typeof candidate.code === 'number') return candidate.code;
+  return undefined;
+}
+
+function isRetryableGeminiError(err: unknown): boolean {
+  const status = getHttpStatus(err);
+  if (status && [408, 429, 500, 502, 503, 504].includes(status)) return true;
+  const msg = err instanceof Error ? err.message.toLowerCase() : '';
+  return msg.includes('fetch') || msg.includes('timeout') || msg.includes('network') || msg.includes('econnreset');
+}
+
+function mapGeminiCopilotError(err: unknown, contextLabel: string): ServiceUnavailableError {
+  if (err instanceof ServiceUnavailableError) return err;
+  const status = getHttpStatus(err);
+  const rawMessage = err instanceof Error ? err.message : String(err);
+  const upper = rawMessage.toUpperCase();
+
+  if (status === 400 && (upper.includes('API_KEY_INVALID') || upper.includes('API KEY'))) {
+    return new ServiceUnavailableError(
+      'GEMINI_API_KEY_INVALID',
+      'Gemini API key is invalid. Please check GEMINI_API_KEY in Settings > Secrets.',
+    );
+  }
+  if (status === 403 || upper.includes('PERMISSION_DENIED')) {
+    return new ServiceUnavailableError(
+      'GEMINI_PERMISSION_DENIED',
+      'Gemini API access was denied. Please verify GEMINI_API_KEY in Settings > Secrets.',
+    );
+  }
+  if (status === 429 || upper.includes('RESOURCE_EXHAUSTED')) {
+    return new ServiceUnavailableError(
+      'GEMINI_QUOTA_EXCEEDED',
+      'Gemini API quota limit reached. Please retry shortly or check your billing quota in Settings > Secrets.',
+    );
+  }
+  if (status === 404 || upper.includes('NOT_FOUND')) {
+    return new ServiceUnavailableError(
+      'GEMINI_MODEL_NOT_FOUND',
+      'Configured Gemini model is currently unavailable for this key. Try switching to Fast Mode or verify model availability.',
+    );
+  }
+  return new ServiceUnavailableError(
+    'GEMINI_INVOCATION_FAILED',
+    `${contextLabel} could not complete (${rawMessage.slice(0, 180)}). Please try again.`,
+  );
+}
+
 function getClient(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) {
-    throw new Error('Gemini API key is not configured on the server.');
+    throw new ServiceUnavailableError(
+      'AI_NOT_CONFIGURED',
+      'Gemini API key is not configured on the server. Set GEMINI_API_KEY in Settings > Secrets.',
+    );
   }
   return new GoogleGenAI({
     apiKey,
@@ -61,6 +135,67 @@ function getClient(): GoogleGenAI {
     },
   });
 }
+
+async function generateWithRetry(
+  ai: GoogleGenAI,
+  params: Parameters<GoogleGenAI['models']['generateContent']>[0],
+  contextLabel: string,
+): Promise<{ response: GenerateContentResponse; modelUsed: string }> {
+  const delays = [300, 900];
+  let lastError: unknown;
+  let currentParams = params;
+
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      const response = await ai.models.generateContent(currentParams);
+      return { response, modelUsed: currentParams.model };
+    } catch (err) {
+      lastError = err;
+      const status = getHttpStatus(err);
+      const rawMsg = err instanceof Error ? err.message : String(err);
+
+      // If thinkingConfig + googleSearch returns a 400 argument error, retry cleanly without thinkingConfig.
+      if (
+        status === 400 &&
+        currentParams.config &&
+        'thinkingConfig' in currentParams.config &&
+        !rawMsg.toUpperCase().includes('API_KEY')
+      ) {
+        const { thinkingConfig: _removed, ...restConfig } = currentParams.config;
+        currentParams = { ...currentParams, config: restConfig };
+        continue;
+      }
+
+      // If gemini-4-hydrogen hits quota (429) or availability (404), fall back to gemini-3.1-flash-lite with the same config.
+      if (
+        (status === 429 || status === 404 || rawMsg.toUpperCase().includes('RESOURCE_EXHAUSTED')) &&
+        currentParams.model === 'gemini-4-hydrogen'
+      ) {
+        const restConfig = currentParams.config ? { ...currentParams.config } : undefined;
+        if (restConfig && 'thinkingConfig' in restConfig) {
+          delete (restConfig as { thinkingConfig?: unknown }).thinkingConfig;
+        }
+        currentParams = {
+          ...currentParams,
+          model: 'gemini-3.1-flash-lite',
+          config: restConfig,
+        };
+        continue;
+      }
+
+      if (attempt < delays.length && isRetryableGeminiError(err)) {
+        await sleep(delays[attempt]);
+        continue;
+      }
+      throw mapGeminiCopilotError(err, contextLabel);
+    }
+  }
+
+  throw mapGeminiCopilotError(lastError, contextLabel);
+}
+
+const LIVE_INTEL_CACHE_TTL_MS = 15 * 60 * 1000;
+const liveIntelCache = new Map<string, { result: LiveIntelligenceResult; expiresAt: number }>();
 
 function extractGrounding(response: unknown): {
   groundingSources: GroundingSource[];
@@ -99,14 +234,26 @@ function extractGrounding(response: unknown): {
 }
 
 export async function runLiveIntelligenceBrief(region = 'Nashik, Maharashtra'): Promise<LiveIntelligenceResult> {
-  const ai = getClient();
-  const modelUsed = 'gemini-4-hydrogen';
+  const cacheKey = region.trim().toLowerCase() || 'nashik, maharashtra';
+  const cached = liveIntelCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
 
-  const response = await ai.models.generateContent({
-    model: modelUsed,
-    contents: `Provide a current, practical agricultural market and weather intelligence brief for farmers in ${region}, India covering Tomato, Onion, Wheat, and Grapes mandi price ranges, weather forecast, and crop pest/disease alerts.`,
-    config: {
-      systemInstruction: `You are KRISHI360 AI, an agricultural market and meteorological analyst for Indian farmers.
+  const ai = getClient();
+  let response: GenerateContentResponse;
+  let modelUsed = 'gemini-4-hydrogen';
+  let searchGrounded = true;
+  let groundingNotice: string | undefined;
+
+  try {
+    const grounded = await generateWithRetry(
+      ai,
+      {
+        model: 'gemini-4-hydrogen',
+        contents: `Provide a current, practical agricultural market and weather intelligence brief for farmers in ${region}, India covering Tomato, Onion, Wheat, and Grapes mandi price ranges, weather forecast, and crop pest/disease alerts.`,
+        config: {
+          systemInstruction: `You are KRISHI360 AI, an agricultural market and meteorological analyst for Indian farmers.
 Use Google Search grounding to retrieve fresh, real-world mandi trends, weather updates, and pest advisories.
 Never include chemical or pesticide dosage quantities.
 Return ONLY a valid JSON object (no markdown fences) with keys:
@@ -115,12 +262,54 @@ Return ONLY a valid JSON object (no markdown fences) with keys:
 - "weatherBrief": string (concise 1-2 sentence local weather forecast)
 - "pestAlert": string (concise 1-2 sentence preventive scouting advisory, no chemical dosages)
 - "sources": array of short source label strings`,
-      tools: [{ googleSearch: {} }],
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-    },
-  });
+          tools: [{ googleSearch: {} }],
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        },
+      },
+      'Live Gemini Search brief',
+    );
+    response = grounded.response;
+    modelUsed = grounded.modelUsed;
+  } catch (err) {
+    const isQuotaOrModelLimit =
+      err instanceof ServiceUnavailableError &&
+      (err.code === 'GEMINI_QUOTA_EXCEEDED' || err.code === 'GEMINI_MODEL_NOT_FOUND');
+    if (!isQuotaOrModelLimit) {
+      throw err;
+    }
 
-  const { groundingSources, searchQueries } = extractGrounding(response);
+    // Search Grounding or gemini-4-hydrogen hit quota; fall back to standard Gemini (without web search)
+    // and clearly mark searchGrounded=false so the UI informs the user transparently.
+    searchGrounded = false;
+    groundingNotice =
+      'Google Search grounding quota is reached on the current API key — showing a Gemini advisory brief without live web search. Check billing/quota in Settings > Secrets for live Search citations.';
+
+    const standard = await generateWithRetry(
+      ai,
+      {
+        model: 'gemini-3.1-flash-lite',
+        contents: `Provide a concise, practical regional agricultural advisory brief for farmers in ${region}, India covering seasonal market planning for Tomato, Onion, Wheat, and Grapes, weather-aware irrigation reminders, and preventive crop scouting.`,
+        config: {
+          systemInstruction: `You are KRISHI360 AI, an agricultural advisory assistant for Indian farmers.
+Live web search is unavailable right now, so DO NOT invent or claim exact live daily spot prices or URLs. Focus on seasonal market preparation, moisture/weather precautions, and preventive scouting.
+Never include chemical or pesticide dosage quantities.
+Return ONLY a valid JSON object (no markdown fences) with keys:
+- "summary": string (2-3 sentences practical regional overview)
+- "mandiUpdates": array of { "crop": string, "priceRange": string, "trend": string } (4 crops: Tomato, Onion, Wheat, Grapes — use "Check local APMC" for priceRange and concise grading/holding tip for trend)
+- "weatherBrief": string (concise 1-2 sentence seasonal weather & irrigation precaution)
+- "pestAlert": string (concise 1-2 sentence preventive scouting advisory, no chemical dosages)
+- "sources": array of short advisory reference strings (e.g. "Agmarknet APMC check recommended", "IMD District Agromet Bulletin")`,
+        },
+      },
+      'Gemini advisory brief',
+    );
+    response = standard.response;
+    modelUsed = standard.modelUsed;
+  }
+
+  const { groundingSources, searchQueries } = searchGrounded
+    ? extractGrounding(response)
+    : { groundingSources: [], searchQueries: [] };
   const raw = (response.text ?? '').trim();
 
   let parsed: Partial<LiveIntelligenceResult> = {};
@@ -130,7 +319,7 @@ Return ONLY a valid JSON object (no markdown fences) with keys:
     parsed = JSON.parse(match ? match[0] : cleaned) as Partial<LiveIntelligenceResult>;
   } catch {
     parsed = {
-      summary: raw || 'Live grounded agricultural briefing retrieved.',
+      summary: raw || 'Agricultural intelligence briefing retrieved from Gemini.',
       mandiUpdates: [],
       weatherBrief: 'Check local IMD district bulletin before irrigation or spraying.',
       pestAlert: 'Continue routine leaf-underside scouting across active plots.',
@@ -141,7 +330,7 @@ Return ONLY a valid JSON object (no markdown fences) with keys:
   const summary =
     typeof parsed.summary === 'string' && parsed.summary.trim()
       ? parsed.summary.trim()
-      : 'Live grounded agricultural briefing retrieved.';
+      : 'Agricultural intelligence briefing retrieved from Gemini.';
   const weatherBrief =
     typeof parsed.weatherBrief === 'string' && parsed.weatherBrief.trim()
       ? parsed.weatherBrief.trim()
@@ -168,7 +357,7 @@ Return ONLY a valid JSON object (no markdown fences) with keys:
     ? parsed.sources.filter((s): s is string => typeof s === 'string' && s.trim().length > 0).slice(0, 8)
     : [];
 
-  return {
+  const result: LiveIntelligenceResult = {
     summary,
     mandiUpdates,
     weatherBrief,
@@ -177,14 +366,19 @@ Return ONLY a valid JSON object (no markdown fences) with keys:
     groundingSources,
     searchQueries,
     modelUsed,
+    searchGrounded,
+    groundingNotice,
     generatedAt: new Date().toISOString(),
   };
+
+  liveIntelCache.set(cacheKey, { result, expiresAt: Date.now() + LIVE_INTEL_CACHE_TTL_MS });
+  return result;
 }
 
 export async function runKrishiCopilotChat(input: CopilotTurnInput): Promise<CopilotTurnResult> {
   const ai = getClient();
   const mode = input.mode === 'fast' ? 'fast' : 'grounded';
-  const modelUsed = mode === 'fast' ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen';
+  const requestedModel = mode === 'fast' ? 'gemini-3.1-flash-lite' : 'gemini-4-hydrogen';
 
   const ctx = input.farmContext ?? {};
   const contextLines = [
@@ -193,7 +387,19 @@ export async function runKrishiCopilotChat(input: CopilotTurnInput): Promise<Cop
     ctx.crops?.length ? `Active crops: ${ctx.crops.slice(0, 10).join(', ')}` : '',
     typeof ctx.plotsCount === 'number' ? `Registered plots: ${ctx.plotsCount}` : '',
     typeof ctx.openCasesCount === 'number' ? `Open CropDoctor cases: ${ctx.openCasesCount}` : '',
+    ctx.recentCases?.length
+      ? `Recent CropDoctor cases: ${ctx.recentCases
+          .slice(0, 5)
+          .map((c) => `${c.id} (${c.crop}: ${c.condition}, review=${c.reviewStatus})`)
+          .join('; ')}`
+      : '',
     typeof ctx.criticalStorageCount === 'number' ? `Critical storage batches: ${ctx.criticalStorageCount}` : '',
+    ctx.criticalBatches?.length
+      ? `Flagged storage batches: ${ctx.criticalBatches
+          .slice(0, 5)
+          .map((b) => `${b.code} (${b.crop}, ${b.tempC}°C, ${b.humidity}% RH, status=${b.status})`)
+          .join('; ')}`
+      : '',
     typeof ctx.activeAlertsCount === 'number' ? `Active mandi alerts: ${ctx.activeAlertsCount}` : '',
   ]
     .filter(Boolean)
@@ -226,20 +432,24 @@ ${contextLines ? `\nFarmer Workspace Context:\n${contextLines}` : ''}`;
     { role: 'user', parts: [{ text: input.message.trim().slice(0, 3000) }] },
   ];
 
-  const response = await ai.models.generateContent({
-    model: modelUsed,
-    contents,
-    config:
-      mode === 'grounded'
-        ? {
-            systemInstruction,
-            tools: [{ googleSearch: {} }],
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          }
-        : {
-            systemInstruction,
-          },
-  });
+  const { response, modelUsed } = await generateWithRetry(
+    ai,
+    {
+      model: requestedModel,
+      contents,
+      config:
+        mode === 'grounded'
+          ? {
+              systemInstruction,
+              tools: [{ googleSearch: {} }],
+              thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            }
+          : {
+              systemInstruction,
+            },
+    },
+    'KRISHI360 AI Copilot',
+  );
 
   const { groundingSources, searchQueries } = extractGrounding(response);
   let reply = (response.text ?? '').trim();

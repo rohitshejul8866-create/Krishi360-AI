@@ -179,28 +179,49 @@ export const cropDoctorService = {
       }
     }
 
-    const res = await fetch(`${apiClient.baseUrl}/ai/crop-analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        crop: input.crop,
-        plantPart: input.plantPart,
-        location: input.location,
-        symptoms: input.symptoms.trim(),
-        ...(encodedImage ?? {}),
-      }),
-    })
-    const json = (await res.json().catch(() => ({}))) as {
-      data?: { analysis?: BackendAiAnalysis }
-      error?: string | { message?: string }
-    }
-    if (!res.ok || !json.data?.analysis) {
-      const msg = typeof json.error === 'string' ? json.error : json.error?.message
-      throw new Error(msg || 'Gemini Vision crop analysis failed.')
+    let analysis: AnalysisResult | null = null
+    try {
+      const res = await fetch(`${apiClient.baseUrl}/ai/crop-analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          crop: input.crop,
+          plantPart: input.plantPart,
+          location: input.location,
+          symptoms: input.symptoms.trim(),
+          ...(encodedImage ?? {}),
+        }),
+      })
+      const contentType = res.headers.get('content-type') ?? ''
+      if (res.status !== 404 && contentType.includes('application/json')) {
+        const json = (await res.json().catch(() => ({}))) as {
+          data?: { analysis?: BackendAiAnalysis }
+          error?: string | { message?: string }
+        }
+        if (res.ok && json.data?.analysis) {
+          analysis = mapAnalysisResult(json.data.analysis)
+        } else if (res.status === 400) {
+          const msg = typeof json.error === 'string' ? json.error : json.error?.message
+          throw new Error(msg || 'Invalid crop analysis input.')
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message === 'Invalid crop analysis input.') {
+        throw err
+      }
     }
 
-    const ai = json.data.analysis
-    const analysis = mapAnalysisResult(ai)
+    if (!analysis) {
+      const fallback = await cropDoctorService.analyze(input)
+      analysis = {
+        ...fallback,
+        provider: 'heuristic',
+        simulated: true,
+        uncertainty:
+          'Server AI endpoint unreachable on this host; saved indicative pattern analysis to your Cloud Firestore account.',
+      }
+    }
+
     const cropCase: CropCase = {
       id: makeId('CASE'),
       farmerId: farmerInfo?.id || 'firebase-user',

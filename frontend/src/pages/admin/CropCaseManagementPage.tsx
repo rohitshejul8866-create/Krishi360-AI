@@ -2,6 +2,7 @@ import { Activity, CheckCircle2, Clock3, TriangleAlert } from 'lucide-react'
 import { DemoNote } from '../../components/common/DemoNote'
 import { StatusPill } from '../../components/ui/Badge'
 import { formatDate } from '../../services/utils'
+import { useAuth } from '../../context/AuthContext'
 import { useApp } from '../../services/store'
 import { AdminCollectionPage, type AdminFilter } from './AdminCollectionPage'
 import type { Column } from '../../components/ui/Table'
@@ -13,6 +14,7 @@ const priorityFilter: AdminFilter<AdminCase> = { label: 'Priority', options: ['h
 const cropFilter: AdminFilter<AdminCase> = { label: 'Crop', options: ['Tomato', 'Wheat', 'Grapes', 'Onion', 'Rice', 'Cotton', 'Maize', 'Potato'], value: (row) => row.crop }
 
 export function CropCaseManagementPage() {
+  const { user } = useAuth()
   const { cases, reviewCase } = useApp()
   const columns: Column<AdminCase>[] = [
     { key: 'id', label: 'Case', render: (row) => <div><p className="font-bold text-ink">{row.id}</p><p className="text-xs text-muted">{formatDate(row.submittedAt)}</p></div> },
@@ -63,7 +65,7 @@ export function CropCaseManagementPage() {
             row.expertNotes ?? 'Admin demo update.',
             row.expertGuidance ?? 'Continue monitoring and consult a local expert before applying any treatment.',
             row.status === 'resolved' ? 'in_review' : 'completed',
-            'Admin User',
+            user?.name ?? 'Admin User',
           ),
       }}
     />

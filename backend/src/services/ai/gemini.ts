@@ -205,23 +205,44 @@ export class GeminiAnalysisService implements AiAnalysisService {
 
     let response: GenerateContentResponse | undefined;
     let lastError: unknown;
+    let activeModelId = this.modelId;
+    let includeThinkingConfig = true;
     const delays = [300, 900];
 
     for (let attempt = 0; attempt <= delays.length; attempt++) {
       try {
         response = await ai.models.generateContent({
-          model: this.modelId,
+          model: activeModelId,
           contents,
           config: {
             systemInstruction: SYSTEM_INSTRUCTION,
             responseMimeType: 'application/json',
             responseSchema: RESPONSE_SCHEMA,
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            ...(includeThinkingConfig && activeModelId !== 'gemini-3.1-flash-lite'
+              ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+              : {}),
           },
         });
         break;
       } catch (err) {
         lastError = err;
+        const status = getHttpStatus(err);
+        const rawMsg = err instanceof Error ? err.message : String(err);
+
+        if (status === 400 && includeThinkingConfig && !rawMsg.toUpperCase().includes('API_KEY')) {
+          includeThinkingConfig = false;
+          continue;
+        }
+
+        if (
+          (status === 429 || status === 404 || rawMsg.toUpperCase().includes('RESOURCE_EXHAUSTED')) &&
+          activeModelId !== 'gemini-3.1-flash-lite'
+        ) {
+          activeModelId = 'gemini-3.1-flash-lite';
+          includeThinkingConfig = false;
+          continue;
+        }
+
         if (attempt < delays.length && isRetryableGeminiError(err)) {
           await sleep(delays[attempt]);
           continue;
@@ -269,7 +290,7 @@ export class GeminiAnalysisService implements AiAnalysisService {
 
     return {
       provider: this.provider,
-      modelId: this.modelId,
+      modelId: activeModelId,
       condition: parsed.condition,
       confidence,
       uncertainty: parsed.uncertainty,

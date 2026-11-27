@@ -74,12 +74,13 @@ service cloud.firestore {
     // -------------------------------------------------------------------------
     function isValidUserSummary(data, userId) {
       return data.keys().hasAll(['uid', 'displayName', 'role', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['uid', 'displayName', 'role', 'photoUrl', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'photoUrl', 'status', 'createdAt', 'updatedAt']) &&
         isValidId(data.uid) &&
         data.uid == userId &&
         data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
         data.role in ['farmer', 'expert', 'admin'] &&
         isOptionalString(data, 'photoUrl', 512) &&
+        (!('status' in data) || data.status in ['active', 'invited', 'suspended']) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -238,6 +239,72 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidMandiPrice(data, creatorUid) {
+      return data.keys().hasAll(['createdBy', 'crop', 'state', 'district', 'mandi', 'minPrice', 'maxPrice', 'modalPrice', 'date', 'dataType', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['createdBy', 'crop', 'state', 'district', 'mandi', 'minPrice', 'maxPrice', 'modalPrice', 'changePct', 'date', 'source', 'dataType', 'createdAt', 'updatedAt']) &&
+        isValidId(data.createdBy) &&
+        data.createdBy == creatorUid &&
+        data.crop is string && data.crop.size() >= 1 && data.crop.size() <= 80 &&
+        data.state is string && data.state.size() >= 1 && data.state.size() <= 80 &&
+        data.district is string && data.district.size() >= 1 && data.district.size() <= 80 &&
+        data.mandi is string && data.mandi.size() >= 1 && data.mandi.size() <= 120 &&
+        data.minPrice is number && data.minPrice >= 0 && data.minPrice <= 1000000 &&
+        data.maxPrice is number && data.maxPrice >= 0 && data.maxPrice <= 1000000 &&
+        data.modalPrice is number && data.modalPrice >= 0 && data.modalPrice <= 1000000 &&
+        (!('changePct' in data) || (data.changePct is number && data.changePct >= -100 && data.changePct <= 1000)) &&
+        data.date is string && data.date.size() >= 4 && data.date.size() <= 32 &&
+        isOptionalString(data, 'source', 160) &&
+        data.dataType in ['sample', 'verified'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSchemeEntry(data, creatorUid) {
+      return data.keys().hasAll(['createdBy', 'name', 'category', 'state', 'summary', 'eligibility', 'documents', 'sourceLabel', 'sourceUrl', 'tags', 'dataType', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['createdBy', 'name', 'category', 'state', 'summary', 'eligibility', 'documents', 'sourceLabel', 'sourceUrl', 'tags', 'dataType', 'createdAt', 'updatedAt']) &&
+        isValidId(data.createdBy) &&
+        data.createdBy == creatorUid &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        data.category is string && data.category.size() >= 1 && data.category.size() <= 80 &&
+        data.state is string && data.state.size() >= 1 && data.state.size() <= 80 &&
+        data.summary is string && data.summary.size() >= 1 && data.summary.size() <= 2000 &&
+        isStringList(data.eligibility, 25, 300) &&
+        isStringList(data.documents, 25, 200) &&
+        data.sourceLabel is string && data.sourceLabel.size() <= 160 &&
+        data.sourceUrl is string && data.sourceUrl.size() <= 512 &&
+        isStringList(data.tags, 20, 64) &&
+        data.dataType in ['sample', 'verified'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPlatformSettings(data) {
+      return data.keys().hasAll(['language', 'notificationsEnabled', 'demoMode', 'compactTables', 'expertReviewSlaHours', 'storageAlertTemp', 'storageAlertHumidity', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['language', 'notificationsEnabled', 'demoMode', 'compactTables', 'expertReviewSlaHours', 'storageAlertTemp', 'storageAlertHumidity', 'updatedBy', 'createdAt', 'updatedAt']) &&
+        data.language is string && data.language.size() >= 1 && data.language.size() <= 40 &&
+        data.notificationsEnabled is bool &&
+        data.demoMode is bool &&
+        data.compactTables is bool &&
+        data.expertReviewSlaHours is number && data.expertReviewSlaHours >= 1 && data.expertReviewSlaHours <= 168 &&
+        data.storageAlertTemp is number && data.storageAlertTemp >= -10 && data.storageAlertTemp <= 60 &&
+        data.storageAlertHumidity is number && data.storageAlertHumidity >= 0 && data.storageAlertHumidity <= 100 &&
+        isOptionalString(data, 'updatedBy', 128) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLog(data, actorUid) {
+      return data.keys().hasAll(['actorUid', 'actor', 'role', 'action', 'target', 'createdAt']) &&
+        data.keys().hasOnly(['actorUid', 'actor', 'role', 'action', 'target', 'createdAt']) &&
+        isValidId(data.actorUid) &&
+        data.actorUid == actorUid &&
+        data.actor is string && data.actor.size() >= 1 && data.actor.size() <= 120 &&
+        data.role in ['farmer', 'expert', 'admin'] &&
+        data.action is string && data.action.size() >= 1 && data.action.size() <= 200 &&
+        data.target is string && data.target.size() >= 1 && data.target.size() <= 160 &&
+        data.createdAt is timestamp;
+    }
+
     // -------------------------------------------------------------------------
     // Admins Registry
     // -------------------------------------------------------------------------
@@ -253,19 +320,96 @@ service cloud.firestore {
     }
 
     // -------------------------------------------------------------------------
+    // Shared Catalogues & Platform Config
+    // -------------------------------------------------------------------------
+    match /mandiPrices/{priceId} {
+      allow get: if isValidId(priceId) && isSignedIn();
+      allow list: if isSignedIn() && (resource.data.dataType in ['sample', 'verified'] || isBootstrappedAdminEmail());
+      allow create: if isValidId(priceId) &&
+        isAdmin() &&
+        isValidMandiPrice(incoming(), request.auth.uid) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(priceId) &&
+        isAdmin() &&
+        isValidMandiPrice(incoming(), existing().createdBy) &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if isValidId(priceId) && isAdmin();
+    }
+
+    match /schemes/{schemeId} {
+      allow get: if isValidId(schemeId) && isSignedIn();
+      allow list: if isSignedIn() && (resource.data.dataType in ['sample', 'verified'] || isBootstrappedAdminEmail());
+      allow create: if isValidId(schemeId) &&
+        isAdmin() &&
+        isValidSchemeEntry(incoming(), request.auth.uid) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(schemeId) &&
+        isAdmin() &&
+        isValidSchemeEntry(incoming(), existing().createdBy) &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if isValidId(schemeId) && isAdmin();
+    }
+
+    match /platform/settings {
+      allow get: if isSignedIn();
+      allow list: if false;
+      allow create: if isAdmin() &&
+        isValidPlatformSettings(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() &&
+        isValidPlatformSettings(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isSignedIn() && (resource.data.actorUid == request.auth.uid || isBootstrappedAdminEmail());
+      allow create: if isValidId(logId) &&
+        isVerified() &&
+        isValidAuditLog(incoming(), request.auth.uid) &&
+        incoming().createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Collection-group list queries for Admin visibility across farmer workspaces
+    match /{path=**}/cropCases/{caseId} {
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+    }
+    match /{path=**}/farms/{farmId} {
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+    }
+    match /{path=**}/storageBatches/{batchId} {
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+    }
+    match /{path=**}/notifications/{notificationId} {
+      allow list: if isSignedIn() && (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+    }
+
+    // -------------------------------------------------------------------------
     // Users Root (Non-PII Summary Only) & User Subcollections
     // -------------------------------------------------------------------------
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
-      allow list: if false;
+      allow list: if isSignedIn() && isBootstrappedAdminEmail();
 
       allow create: if isValidId(userId) &&
         isVerified() &&
-        isOwner(userId) &&
         isValidUserSummary(incoming(), userId) &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time &&
-        (incoming().role == 'farmer' || isBootstrappedAdminEmail());
+        (
+          (isOwner(userId) && (incoming().role == 'farmer' || isBootstrappedAdminEmail())) ||
+          isAdmin()
+        );
 
       allow update: if isValidId(userId) &&
         isVerified() &&
@@ -291,7 +435,7 @@ service cloud.firestore {
 
         allow create: if isValidId(userId) &&
           isVerified() &&
-          isOwner(userId) &&
+          (isOwner(userId) || isAdmin()) &&
           isValidPrivateProfile(incoming(), userId) &&
           incoming().createdAt == request.time &&
           incoming().updatedAt == request.time &&
