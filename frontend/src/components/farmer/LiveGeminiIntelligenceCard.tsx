@@ -13,6 +13,7 @@ import {
 import { Card, CardHeader } from '../ui/Card'
 import { Badge } from '../ui/Badge'
 import { useAuth } from '../../context/AuthContext'
+import { apiClient } from '../../services/apiClient'
 import { useApp } from '../../services/store'
 import type { GroundingSource } from '../../types'
 
@@ -41,14 +42,18 @@ export function LiveGeminiIntelligenceCard() {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/ai/live-intelligence', {
+      const res = await fetch(`${apiClient.baseUrl}/ai/live-intelligence`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ region }),
       })
-      const json = (await res.json().catch(() => ({}))) as { data?: LiveIntelligence; error?: string }
+      const json = (await res.json().catch(() => ({}))) as {
+        data?: LiveIntelligence
+        error?: string | { message?: string }
+      }
       if (!res.ok || !json.data) {
-        throw new Error(json.error || 'Failed to fetch live agricultural briefing from Gemini')
+        const msg = typeof json.error === 'string' ? json.error : json.error?.message
+        throw new Error(msg || 'Failed to fetch live agricultural briefing from Gemini')
       }
       setData(json.data)
     } catch (err) {

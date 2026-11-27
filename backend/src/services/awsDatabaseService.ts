@@ -4,6 +4,7 @@ import {
   ResourceNotFoundException,
   waitUntilTableExists,
 } from '@aws-sdk/client-dynamodb';
+import { HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
 import type { AppConfig } from '../config/env';
 import type { Container, Repositories } from '../container';
 import type { AuthUser } from '../middleware/auth';
@@ -43,6 +44,14 @@ export interface BackendEndpointInfo {
   description: string;
 }
 
+export interface S3BucketInspection {
+  configured: boolean;
+  reachable: boolean;
+  bucketName: string;
+  status: 'ACTIVE' | 'NOT_FOUND' | 'NOT_CONFIGURED' | 'UNREACHABLE';
+  message: string;
+}
+
 export interface BackendStatusSnapshot {
   service: string;
   dataBackend: AppConfig['dataBackend'];
@@ -50,10 +59,14 @@ export interface BackendStatusSnapshot {
   usersTableName: string;
   flagTableName: string;
   tableName: string;
+  uploadBucketName: string;
   customEndpointConfigured: boolean;
   awsCredentialsConfigured: boolean;
   s3UploadsConfigured: boolean;
+  s3: S3BucketInspection;
   aiProvider: AppConfig['aiProvider'];
+  bedrockConfigured: boolean;
+  bedrockModelId: string;
   authMode: AppConfig['authMode'];
   dynamo: DynamoTableInspection;
   usersDynamo: DynamoTableInspection;
@@ -125,6 +138,57 @@ function sanitizeAwsFailure(err: unknown): string {
     return 'Unable to reach AWS DynamoDB endpoint from server.';
   }
   return `DynamoDB check returned ${name}.`;
+}
+
+export async function inspectS3Bucket(config: AppConfig): Promise<S3BucketInspection> {
+  const bucketName = config.uploadBucketName.trim();
+  if (!bucketName) {
+    return {
+      configured: false,
+      reachable: false,
+      bucketName: '',
+      status: 'NOT_CONFIGURED',
+      message: 'UPLOAD_BUCKET_NAME is not set. Presigned S3 uploads activate once configured.',
+    };
+  }
+  if (!config.awsCredentialsConfigured) {
+    return {
+      configured: true,
+      reachable: false,
+      bucketName,
+      status: 'NOT_CONFIGURED',
+      message: `Bucket "${bucketName}" is set, awaiting AWS IAM credentials to verify reachability.`,
+    };
+  }
+  try {
+    const s3 = new S3Client({ region: config.awsRegion });
+    await s3.send(new HeadBucketCommand({ Bucket: bucketName }));
+    return {
+      configured: true,
+      reachable: true,
+      bucketName,
+      status: 'ACTIVE',
+      message: `Connected to private S3 bucket "${bucketName}" in ${config.awsRegion}.`,
+    };
+  } catch (err) {
+    const name = err instanceof Error ? err.name : 'UnknownError';
+    if (name === 'NotFound' || name === 'NoSuchBucket') {
+      return {
+        configured: true,
+        reachable: false,
+        bucketName,
+        status: 'NOT_FOUND',
+        message: `S3 bucket "${bucketName}" was not found in ${config.awsRegion}.`,
+      };
+    }
+    return {
+      configured: true,
+      reachable: false,
+      bucketName,
+      status: 'UNREACHABLE',
+      message: `S3 HeadBucket failed (${name}). Verify IAM s3:ListBucket permissions and bucket region.`,
+    };
+  }
 }
 
 export async function inspectDynamoTable(
@@ -297,9 +361,10 @@ export async function getBackendStatus(
   container: Container,
   runIntegrity = false,
 ): Promise<BackendStatusSnapshot> {
-  const [usersDynamo, flagDynamo, counts] = await Promise.all([
+  const [usersDynamo, flagDynamo, s3, counts] = await Promise.all([
     inspectDynamoTable(config, config.usersTableName),
     inspectDynamoTable(config, config.flagTableName),
+    inspectS3Bucket(config),
     countAllEntities(container.repos),
   ]);
   const sqlite = config.dataBackend === 'sqlite' ? inspectSqliteDatabase(config, runIntegrity) : undefined;
@@ -324,10 +389,16 @@ export async function getBackendStatus(
     usersTableName: config.usersTableName,
     flagTableName: config.flagTableName,
     tableName: config.flagTableName,
+    uploadBucketName: config.uploadBucketName,
     customEndpointConfigured: Boolean(config.dynamoEndpoint),
     awsCredentialsConfigured: config.awsCredentialsConfigured,
     s3UploadsConfigured: Boolean(config.uploadBucketName),
+    s3,
     aiProvider: config.aiProvider,
+    bedrockConfigured: Boolean(
+      config.bedrockModelId && (config.bedrockBearerTokenConfigured || config.awsCredentialsConfigured),
+    ),
+    bedrockModelId: config.bedrockModelId,
     authMode: config.authMode,
     dynamo,
     usersDynamo,

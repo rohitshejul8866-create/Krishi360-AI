@@ -11,7 +11,7 @@
 
 import path from 'node:path';
 
-export type AuthMode = 'dev' | 'cognito';
+export type AuthMode = 'dev' | 'session' | 'cognito';
 export type DataBackend = 'memory' | 'sqlite' | 'dynamodb';
 export type AiProvider = 'disabled' | 'heuristic' | 'bedrock' | 'gemini';
 
@@ -74,7 +74,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const isLambda = Boolean(env.AWS_LAMBDA_FUNCTION_NAME);
   const nodeEnv = env.NODE_ENV ?? (isLambda ? 'production' : 'local');
 
-  const authMode = oneOf(env.AUTH_MODE, ['dev', 'cognito'] as const, isLambda ? 'cognito' : 'dev', 'AUTH_MODE');
+  const authMode = oneOf(
+    env.AUTH_MODE,
+    ['dev', 'session', 'cognito'] as const,
+    isLambda ? 'session' : 'dev',
+    'AUTH_MODE',
+  );
   const dataBackend = oneOf(
     env.DATA_BACKEND,
     ['memory', 'sqlite', 'dynamodb'] as const,
@@ -93,13 +98,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error('Refusing to start: dev-only AUTH_MODE/DATA_BACKEND/AI_PROVIDER cannot be used inside AWS Lambda.');
   }
 
-  const sqliteDbPath = path.resolve(process.cwd(), env.SQLITE_DB_PATH?.trim() || '.data/krishi360.db');
-  const awsRegion = env.AWS_REGION || 'ap-south-1';
+  const rawSqlitePath = env.SQLITE_DB_PATH?.trim();
+  const sqliteDbPath =
+    rawSqlitePath === ':memory:'
+      ? ':memory:'
+      : path.resolve(process.cwd(), rawSqlitePath || '.data/krishi360.db');
+  const awsRegion = env.AWS_REGION || env.AWS_DEFAULT_REGION || 'ap-south-1';
   const dynamoEndpoint = optionalHttpUrl(env.DYNAMODB_ENDPOINT, 'DYNAMODB_ENDPOINT');
   const awsCredentialsConfigured =
     isLambda ||
     Boolean(env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY) ||
     Boolean(env.AWS_WEB_IDENTITY_TOKEN_FILE) ||
+    Boolean(env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI || env.AWS_CONTAINER_CREDENTIALS_FULL_URI) ||
+    Boolean(env.AWS_ECS_CONTAINER_METADATA_URI_V4 || env.AWS_PROFILE || env.AWS_ROLE_ARN) ||
     Boolean(dynamoEndpoint);
 
   const bedrockBearerTokenConfigured = Boolean(

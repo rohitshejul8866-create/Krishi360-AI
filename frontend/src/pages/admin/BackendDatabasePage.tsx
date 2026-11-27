@@ -507,9 +507,15 @@ export function BackendDatabasePage() {
         <StatCard
           label="AI & S3 Media"
           value={status ? status.aiProvider.toUpperCase() : '—'}
-          detail={status?.s3UploadsConfigured ? 'S3 bucket configured' : 'Local / simulated media mode'}
+          detail={
+            status?.s3?.reachable
+              ? `S3 active (${status.s3.bucketName})`
+              : status?.s3UploadsConfigured
+                ? `S3 ${status.s3?.status ?? 'configured'}`
+                : 'Local / simulated media mode'
+          }
           icon={<Cloud size={18} />}
-          tone={status?.awsCredentialsConfigured ? 'forest' : 'neutral'}
+          tone={status?.awsCredentialsConfigured || status?.s3?.reachable ? 'forest' : 'neutral'}
         />
       </div>
 
@@ -671,14 +677,27 @@ export function BackendDatabasePage() {
                     ready: true,
                   },
                   {
-                    key: 'AWS_ACCESS_KEY_ID / SECRET',
+                    key: 'AWS_ACCESS_KEY_ID / IAM_ROLE',
                     value: status?.awsCredentialsConfigured ? 'Configured on server' : 'Not set (using SQLite)',
                     ready: Boolean(status?.awsCredentialsConfigured),
                   },
                   {
                     key: 'UPLOAD_BUCKET_NAME (S3)',
-                    value: status?.s3UploadsConfigured ? 'Configured on server' : 'Optional / local mode',
-                    ready: Boolean(status?.s3UploadsConfigured),
+                    value: status?.s3?.reachable
+                      ? `${status.s3.bucketName} · ACTIVE`
+                      : status?.s3UploadsConfigured
+                        ? `${status.uploadBucketName} · ${status.s3?.status ?? 'PENDING'}`
+                        : 'Optional / local mode',
+                    ready: Boolean(status?.s3?.reachable),
+                  },
+                  {
+                    key: 'BEDROCK_MODEL_ID',
+                    value: status?.bedrockConfigured
+                      ? status.bedrockModelId
+                      : status?.aiProvider === 'gemini'
+                        ? 'Using Gemini API'
+                        : 'Not configured',
+                    ready: Boolean(status?.bedrockConfigured || status?.aiProvider === 'gemini'),
                   },
                   {
                     key: 'AUTH_MODE',

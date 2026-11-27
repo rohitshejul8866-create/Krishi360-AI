@@ -20,7 +20,7 @@ export function corsHeaders(config: AppConfig, origin: string | undefined): Reco
   return {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS',
     'Access-Control-Max-Age': '600',
     Vary: 'Origin',
   };

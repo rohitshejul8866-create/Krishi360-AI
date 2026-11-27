@@ -60,7 +60,7 @@ export function roleFromGroups(groups: string[]): Role | null {
  * issued by /api/auth/* on login/registration.
  */
 export function resolveUser(event: APIGatewayProxyEvent, config: AppConfig): AuthUser | null {
-  if (config.authMode === 'dev') {
+  if (config.authMode === 'dev' || config.authMode === 'session') {
     const authHeader = header(event, 'authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) return null;
     const token = authHeader.slice(7).trim();

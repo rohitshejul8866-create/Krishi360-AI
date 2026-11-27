@@ -1,0 +1,13 @@
+node_modules
+dist
+dist-server
+.data
+.aws-sam
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+:memory:*
+.git

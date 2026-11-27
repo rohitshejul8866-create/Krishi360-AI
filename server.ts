@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { loadConfig } from './backend/src/config/env';
 import { buildContainer, setContainer } from './backend/src/container';
 import { buildAuthRoutes } from './backend/src/handlers/auth';
+import { chatBodySchema, cropAnalyzeBodySchema, liveIntelBodySchema } from './backend/src/handlers/ai';
 import { buildBackendRoutes } from './backend/src/handlers/backend';
 import { buildCropDoctorRoutes } from './backend/src/handlers/cropCases';
 import { buildJalSenseRoutes } from './backend/src/handlers/farms';
@@ -72,16 +73,19 @@ async function startServer() {
   const allowedOrigins = [`http://localhost:${port}`, `http://127.0.0.1:${port}`];
   if (process.env.APP_URL) allowedOrigins.push(process.env.APP_URL);
 
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  const defaultAuthMode = nodeEnv === 'production' ? 'session' : 'dev';
+
   const config = loadConfig({
     ...process.env,
-    NODE_ENV: process.env.NODE_ENV ?? 'development',
-    AUTH_MODE: process.env.AUTH_MODE ?? 'dev',
+    NODE_ENV: nodeEnv,
+    AUTH_MODE: process.env.AUTH_MODE ?? defaultAuthMode,
     DATA_BACKEND: process.env.DATA_BACKEND ?? 'sqlite',
     AI_PROVIDER:
       process.env.AI_PROVIDER ??
       (process.env.GEMINI_API_KEY?.trim()
         ? 'gemini'
-        : process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.AWS_BEARER_TOKEN
+        : process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.AWS_BEARER_TOKEN || process.env.BEDROCK_MODEL_ID
           ? 'bedrock'
           : 'gemini'),
     ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS ?? allowedOrigins.join(','),
@@ -123,45 +127,6 @@ async function startServer() {
   const app = express();
   app.disable('x-powered-by');
   const httpServer = http.createServer(app);
-  const liveIntelBodySchema = z
-    .object({
-      region: z.string().trim().min(2).max(120).optional(),
-    })
-    .optional();
-
-  const chatBodySchema = z.object({
-    message: z.string().trim().min(1).max(3000),
-    mode: z.enum(['grounded', 'fast']).default('grounded'),
-    history: z
-      .array(
-        z.object({
-          sender: z.enum(['user', 'assistant']),
-          text: z.string().trim().min(1).max(3000),
-        }),
-      )
-      .max(24)
-      .default([]),
-    farmContext: z
-      .object({
-        farmerName: z.string().trim().max(120).optional(),
-        location: z.string().trim().max(160).optional(),
-        crops: z.array(z.string().trim().max(80)).max(20).optional(),
-        plotsCount: z.number().int().min(0).max(500).optional(),
-        openCasesCount: z.number().int().min(0).max(500).optional(),
-        criticalStorageCount: z.number().int().min(0).max(500).optional(),
-        activeAlertsCount: z.number().int().min(0).max(500).optional(),
-      })
-      .optional(),
-  });
-
-  const cropAnalyzeBodySchema = z.object({
-    crop: z.string().trim().min(1).max(80),
-    plantPart: z.string().trim().min(1).max(80),
-    location: z.string().trim().max(160).default('India'),
-    symptoms: z.string().trim().max(1500).default(''),
-    imageBase64: z.string().min(1).max(11_000_000).optional(),
-    imageMimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).optional(),
-  });
 
   app.post('/api/ai/live-intelligence', express.json({ limit: '64kb' }), async (req, res) => {
     try {
@@ -287,7 +252,11 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distDir = path.resolve(process.cwd(), 'dist');
+    const publicDir = path.resolve(process.cwd(), 'public');
     app.use(express.static(distDir));
+    if (fs.existsSync(publicDir)) {
+      app.use(express.static(publicDir));
+    }
     app.get('*', (_req, res) => {
       const indexFile = path.join(distDir, 'index.html');
       if (fs.existsSync(indexFile)) {

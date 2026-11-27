@@ -1,0 +1,29 @@
+version: 1.0
+runtime: nodejs22
+build:
+  commands:
+    build:
+      - npm install --no-audit --no-fund
+      - npm run build
+      - npm run build:server
+run:
+  runtime-version: 22
+  command: node dist-server/server.mjs
+  network:
+    port: 3000
+    env: PORT
+  env:
+    - name: NODE_ENV
+      value: production
+    - name: PORT
+      value: "3000"
+    - name: AUTH_MODE
+      value: session
+    - name: DATA_BACKEND
+      value: dynamodb
+    - name: AWS_REGION
+      value: ap-south-1
+    - name: DYNAMODB_USERS_TABLE_NAME
+      value: krishi360-users-prod
+    - name: DYNAMODB_FLAG_TABLE_NAME
+      value: krishi360-flag-prod

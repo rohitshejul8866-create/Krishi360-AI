@@ -172,12 +172,17 @@ function migrateLegacySingleTable(db: DatabaseSync): void {
 }
 
 export function getSqliteDb(dbPath: string): DatabaseSync {
-  const resolved = path.resolve(dbPath);
+  const isMemory = dbPath === ':memory:';
+  const resolved = isMemory ? ':memory:' : path.resolve(dbPath);
   let db = instances.get(resolved);
   if (!db) {
-    fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    if (!isMemory) {
+      fs.mkdirSync(path.dirname(resolved), { recursive: true });
+    }
     db = new DatabaseSync(resolved);
-    db.exec('PRAGMA journal_mode = WAL;');
+    if (!isMemory) {
+      db.exec('PRAGMA journal_mode = WAL;');
+    }
     db.exec('PRAGMA synchronous = NORMAL;');
     db.exec('PRAGMA foreign_keys = ON;');
     db.exec('PRAGMA busy_timeout = 5000;');
@@ -349,10 +354,11 @@ export function updateSqliteItem<T extends { version: number }>(
 
 export function inspectSqliteDatabase(config: AppConfig, runIntegrity = false): SqliteInspection {
   const db = getSqliteDb(config.sqliteDbPath);
-  const exists = fs.existsSync(config.sqliteDbPath);
+  const isMemory = config.sqliteDbPath === ':memory:';
+  const exists = !isMemory && fs.existsSync(config.sqliteDbPath);
   let fileSizeBytes = exists ? fs.statSync(config.sqliteDbPath).size : 0;
   const walPath = `${config.sqliteDbPath}-wal`;
-  if (fs.existsSync(walPath)) {
+  if (!isMemory && fs.existsSync(walPath)) {
     fileSizeBytes += fs.statSync(walPath).size;
   }
 

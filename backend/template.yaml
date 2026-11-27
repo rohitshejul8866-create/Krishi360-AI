@@ -1,34 +1,52 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  KRISHI360 AI backend — API Gateway + Lambda + DynamoDB + private S3 +
-  Cognito + optional Bedrock. DESIGN TEMPLATE: review and deploy only with
-  explicit approval. Nothing here is deployed by default.
+  KRISHI360 AI full-stack AWS deployment — S3 Static Website + CloudFront CDN
+  (routing /api/* to API Gateway) + Lambda + 2-Table DynamoDB + Private S3
+  Uploads + Cognito/Session Auth + Gemini / Bedrock AI.
 
 Parameters:
   EnvironmentName:
     Type: String
     Default: dev
     AllowedValues: [dev, staging, prod]
-  AllowedOrigin:
+  AuthMode:
     Type: String
-    Default: http://localhost:5173
-    Description: Single origin used for the API Gateway CORS preflight responses.
-  AllowedOrigins:
-    Type: String
-    Default: http://localhost:5173,http://localhost:4173
-    Description: Comma-separated origins enforced by Lambda response headers. No wildcard.
-  AiProvider:
-    Type: String
-    Default: disabled
-    AllowedValues: [disabled, bedrock]
+    Default: session
+    AllowedValues: [session, cognito]
     Description: >
-      disabled = analysis endpoint fails closed with 503. bedrock = real model
-      invocation; requires model access granted in your account + BedrockModelId.
-  BedrockModelId:
+      session = HMAC-SHA256 Bearer tokens issued by /api/auth/* (works out of the box with the web app).
+      cognito = AWS Cognito User Pool JWT groups.
+  SessionSecret:
     Type: String
     Default: ''
-    Description: e.g. anthropic.claude-3-5-sonnet-20241022-v2:0 (only after model access is granted).
+    NoEcho: true
+    Description: High-entropy secret (min 16 chars) for signing session tokens across Lambda instances.
+  AllowedOrigin:
+    Type: String
+    Default: http://localhost:3000
+    Description: Origin allowed for API Gateway CORS preflight responses.
+  AllowedOrigins:
+    Type: String
+    Default: http://localhost:3000,http://localhost:5173
+    Description: Comma-separated origins enforced by Lambda response headers.
+  AiProvider:
+    Type: String
+    Default: gemini
+    AllowedValues: [disabled, gemini, bedrock]
+    Description: >
+      gemini = Gemini Vision & Search grounding (requires GeminiApiKey).
+      bedrock = AWS Bedrock Converse API (requires BedrockModelId + model access).
+      disabled = analysis endpoint fails closed with 503.
+  GeminiApiKey:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: Server-side Gemini API key (never exposed to browser).
+  BedrockModelId:
+    Type: String
+    Default: amazon.nova-lite-v1:0
+    Description: Bedrock foundation model ID used when AiProvider=bedrock.
   MaxUploadBytes:
     Type: Number
     Default: 5242880
@@ -46,24 +64,139 @@ Globals:
     Runtime: nodejs22.x
     Architectures: [arm64]
     MemorySize: 512
-    Timeout: 15
+    Timeout: 20
     Environment:
       Variables:
         NODE_ENV: production
-        AUTH_MODE: cognito
+        AUTH_MODE: !Ref AuthMode
+        SESSION_SECRET: !Ref SessionSecret
         DATA_BACKEND: dynamodb
-        AWS_REGION: !Ref AWS::Region
         DYNAMODB_USERS_TABLE_NAME: !Ref KrishiUsersTable
         DYNAMODB_FLAG_TABLE_NAME: !Ref KrishiFlagTable
         DYNAMODB_TABLE_NAME: !Ref KrishiFlagTable
         UPLOAD_BUCKET_NAME: !Ref UploadBucket
         ALLOWED_ORIGINS: !Ref AllowedOrigins
         AI_PROVIDER: !Ref AiProvider
+        GEMINI_API_KEY: !Ref GeminiApiKey
         BEDROCK_MODEL_ID: !Ref BedrockModelId
         MAX_UPLOAD_BYTES: !Ref MaxUploadBytes
         LOG_LEVEL: !Ref LogLevel
 
 Resources:
+  # -------------------------------------------------- Website S3 + CDN ----
+  WebsiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub krishi360-web-${EnvironmentName}-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  WebsiteOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub krishi360-web-oac-${EnvironmentName}-${AWS::Region}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  StripApiPrefixFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub krishi360-strip-api-prefix-${EnvironmentName}-${AWS::Region}
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Rewrite /api/* requests to /* before forwarding to API Gateway stage
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var req = event.request;
+          if (req.uri === '/api') {
+            req.uri = '/';
+          } else if (req.uri.startsWith('/api/')) {
+            req.uri = req.uri.slice(4);
+          }
+          return req;
+        }
+
+  WebsiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub KRISHI360 AI Web App & API Proxy (${EnvironmentName})
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_200
+        Origins:
+          - Id: S3WebsiteOrigin
+            DomainName: !GetAtt WebsiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt WebsiteOriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+          - Id: ApiGatewayOrigin
+            DomainName: !Sub ${KrishiApi}.execute-api.${AWS::Region}.amazonaws.com
+            OriginPath: !Sub /${EnvironmentName}
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: S3WebsiteOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          # AWS Managed CachingOptimized policy
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: ApiGatewayOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE]
+            CachedMethods: [GET, HEAD]
+            Compress: true
+            # AWS Managed CachingDisabled + AllViewerExceptHostHeader
+            CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e296692
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt StripApiPrefixFunction.FunctionARN
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+            ErrorCachingMinTTL: 0
+
+  WebsiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref WebsiteBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontOACRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub ${WebsiteBucket.Arn}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${WebsiteDistribution}
+
   # ---------------------------------------------------------------- API ----
   ApiAccessLogGroup:
     Type: AWS::Logs::LogGroup
@@ -79,14 +212,11 @@ Resources:
       Cors:
         AllowOrigin: !Sub "'${AllowedOrigin}'"
         AllowHeaders: "'Content-Type,Authorization'"
-        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowMethods: "'GET,POST,PUT,PATCH,DELETE,OPTIONS'"
       Auth:
-        DefaultAuthorizer: CognitoAuth
         Authorizers:
           CognitoAuth:
             UserPoolArn: !GetAtt KrishiUserPool.Arn
-      # Rate-limiting strategy: stage-wide throttling here; add per-client
-      # usage plans / AWS WAF rate rules before production (docs/SECURITY.md).
       MethodSettings:
         - ResourcePath: '/*'
           HttpMethod: '*'
@@ -146,7 +276,6 @@ Resources:
       IdTokenValidity: 1
       RefreshTokenValidity: 30
 
-  # Role groups. Assignment to expert/admin groups is an explicit admin act.
   FarmerGroup:
     Type: AWS::Cognito::UserPoolGroup
     Properties:
@@ -167,7 +296,6 @@ Resources:
       Description: Admins — explicit administrative operations.
 
   # ---------------------------------------------------------- DynamoDB ----
-  # Table 1: User login details only (credentials, email/role indexes)
   KrishiUsersTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -201,7 +329,6 @@ Resources:
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [IsProd, true, false]
 
-  # Table 2: Flag & domain data table (user profiles, platform flags, cases, mandi, farms, storage, schemes, audit)
   KrishiFlagTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -253,6 +380,12 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
+      CorsConfiguration:
+        CorsRules:
+          - AllowedOrigins: [!Ref AllowedOrigin, 'https://*.cloudfront.net']
+            AllowedMethods: [POST, PUT, GET, HEAD]
+            AllowedHeaders: ['*']
+            MaxAge: 3600
       VersioningConfiguration:
         Status: Enabled
       LifecycleConfiguration:
@@ -269,31 +402,109 @@ Resources:
       BuildMethod: esbuild
       BuildProperties:
         Target: es2022
+        External: [node:sqlite]
         EntryPoints: [src/handlers/auth.ts]
     Properties:
-      Handler: src/handlers/auth.handler
+      Handler: auth.handler
       CodeUri: .
-      Description: GET /health (public) and GET /me.
+      Description: Health, auth session login/registration, profile (/me), and admin user management.
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref KrishiUsersTable
         - DynamoDBCrudPolicy:
             TableName: !Ref KrishiFlagTable
       Events:
-        Health:
-          Type: Api
-          Properties:
-            RestApiId: !Ref KrishiApi
-            Path: /health
-            Method: GET
-            Auth:
-              Authorizer: NONE
-        Me:
-          Type: Api
-          Properties:
-            RestApiId: !Ref KrishiApi
-            Path: /me
-            Method: GET
+        Health: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/health', Method: GET } }
+        GetMe: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/me', Method: GET } }
+        PatchMe: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/me', Method: PATCH } }
+        BootstrapStatus: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/auth/bootstrap-status', Method: GET } }
+        SetupAdmin: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/auth/setup-admin', Method: POST } }
+        Register: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/auth/register', Method: POST } }
+        Login: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/auth/login', Method: POST } }
+        StaffLogin: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/auth/staff-login', Method: POST } }
+        ListUsers: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/admin/users', Method: GET } }
+        CreateUser: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/admin/users', Method: POST } }
+        UpdateUserStatus: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/admin/users/{id}/status', Method: POST } }
+
+  WorkspaceFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Target: es2022
+        External: [node:sqlite]
+        EntryPoints: [src/handlers/workspace.ts]
+    Properties:
+      Handler: workspace.handler
+      CodeUri: .
+      Description: User workspace sync, notifications, and admin platform settings.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref KrishiFlagTable
+      Events:
+        GetWorkspace: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/workspace', Method: GET } }
+        SaveWorkspace: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/workspace', Method: PUT } }
+        CreateNotification: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/notifications', Method: POST } }
+        ReadNotifications: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/notifications/read', Method: POST } }
+        UpdateSettings: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/admin/settings', Method: PUT } }
+
+  BackendFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Target: es2022
+        External: [node:sqlite]
+        EntryPoints: [src/handlers/backend.ts]
+    Properties:
+      Handler: backend.handler
+      CodeUri: .
+      Timeout: 30
+      Description: Admin database inspection, S3/DynamoDB health check, export, and seeding.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref KrishiUsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref KrishiFlagTable
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: [s3:ListBucket]
+              Resource: !GetAtt UploadBucket.Arn
+      Events:
+        Status: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/backend/status', Method: GET } }
+        Records: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/backend/records', Method: GET } }
+        HealthCheck: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/backend/health-check', Method: POST } }
+        Export: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/backend/export', Method: GET } }
+        EnsureTable: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/backend/ensure-table', Method: POST } }
+        Seed: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/backend/seed', Method: POST } }
+
+  AiFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Target: es2022
+        External: [node:sqlite]
+        EntryPoints: [src/handlers/ai.ts]
+    Properties:
+      Handler: ai.handler
+      CodeUri: .
+      Timeout: 30
+      Description: Gemini Search grounded intelligence, AI Copilot chat, and CropDoctor vision triage.
+      Policies:
+        - !If
+          - BedrockEnabled
+          - Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [bedrock:InvokeModel]
+                Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
+          - !Ref AWS::NoValue
+      Events:
+        LiveIntel: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/ai/live-intelligence', Method: POST } }
+        Chat: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/ai/chat', Method: POST } }
+        CropAnalyze: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/ai/crop-analyze', Method: POST } }
 
   CropDoctorFunction:
     Type: AWS::Serverless::Function
@@ -301,9 +512,10 @@ Resources:
       BuildMethod: esbuild
       BuildProperties:
         Target: es2022
+        External: [node:sqlite]
         EntryPoints: [src/handlers/cropCases.ts]
     Properties:
-      Handler: src/handlers/cropCases.handler
+      Handler: cropCases.handler
       CodeUri: .
       Timeout: 30
       Description: CropDoctor AI — cases, presigned uploads, AI analysis, expert review.
@@ -324,24 +536,12 @@ Resources:
                 Resource: !Sub arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}
           - !Ref AWS::NoValue
       Events:
-        CreateCase:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases', Method: POST }
-        ListCases:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases', Method: GET }
-        GetCase:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases/{id}', Method: GET }
-        UploadUrl:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases/{id}/upload-url', Method: POST }
-        Analysis:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases/{id}/analysis', Method: POST }
-        ExpertReview:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases/{id}/expert-review', Method: POST }
+        CreateCase: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases', Method: POST } }
+        ListCases: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases', Method: GET } }
+        GetCase: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases/{id}', Method: GET } }
+        UploadUrl: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases/{id}/upload-url', Method: POST } }
+        Analysis: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases/{id}/analysis', Method: POST } }
+        ExpertReview: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/crop-cases/{id}/expert-review', Method: POST } }
 
   MandiFunction:
     Type: AWS::Serverless::Function
@@ -349,24 +549,19 @@ Resources:
       BuildMethod: esbuild
       BuildProperties:
         Target: es2022
+        External: [node:sqlite]
         EntryPoints: [src/handlers/mandi.ts]
     Properties:
-      Handler: src/handlers/mandi.handler
+      Handler: mandi.handler
       CodeUri: .
       Description: MandiSmart — price reads for all roles, admin-only ingestion.
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref KrishiFlagTable
       Events:
-        ListPrices:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/mandi/prices', Method: GET }
-        GetPrice:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/mandi/prices/{id}', Method: GET }
-        CreatePrice:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/mandi/prices', Method: POST }
+        ListPrices: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/mandi/prices', Method: GET } }
+        GetPrice: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/mandi/prices/{id}', Method: GET } }
+        CreatePrice: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/mandi/prices', Method: POST } }
 
   JalSenseFunction:
     Type: AWS::Serverless::Function
@@ -374,30 +569,22 @@ Resources:
       BuildMethod: esbuild
       BuildProperties:
         Target: es2022
+        External: [node:sqlite]
         EntryPoints: [src/handlers/farms.ts]
     Properties:
-      Handler: src/handlers/farms.handler
+      Handler: farms.handler
       CodeUri: .
       Description: JalSense — farms, plots, manual soil readings, irrigation advice.
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref KrishiFlagTable
       Events:
-        CreateFarm:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/farms', Method: POST }
-        ListFarms:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/farms', Method: GET }
-        GetFarm:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/farms/{id}', Method: GET }
-        AddReading:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/farms/{id}/readings', Method: POST }
-        ListReadings:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/farms/{id}/readings', Method: GET }
+        CreateFarm: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/farms', Method: POST } }
+        ListFarms: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/farms', Method: GET } }
+        GetFarm: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/farms/{id}', Method: GET } }
+        UpdateFarm: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/farms/{id}', Method: PUT } }
+        AddReading: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/farms/{id}/readings', Method: POST } }
+        ListReadings: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/farms/{id}/readings', Method: GET } }
 
   GrainGuardFunction:
     Type: AWS::Serverless::Function
@@ -405,33 +592,22 @@ Resources:
       BuildMethod: esbuild
       BuildProperties:
         Target: es2022
+        External: [node:sqlite]
         EntryPoints: [src/handlers/storage.ts]
     Properties:
-      Handler: src/handlers/storage.handler
+      Handler: storage.handler
       CodeUri: .
       Description: GrainGuard — storage batches, readings, alerts, inspections.
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref KrishiFlagTable
       Events:
-        CreateBatch:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches', Method: POST }
-        ListBatches:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches', Method: GET }
-        GetBatch:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches/{id}', Method: GET }
-        AddReading:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches/{id}/readings', Method: POST }
-        ListAlerts:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches/{id}/alerts', Method: GET }
-        AddInspection:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches/{id}/inspections', Method: POST }
+        CreateBatch: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches', Method: POST } }
+        ListBatches: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches', Method: GET } }
+        GetBatch: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches/{id}', Method: GET } }
+        AddReading: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches/{id}/readings', Method: POST } }
+        ListAlerts: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches/{id}/alerts', Method: GET } }
+        AddInspection: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/storage-batches/{id}/inspections', Method: POST } }
 
   SchemeSaathiFunction:
     Type: AWS::Serverless::Function
@@ -439,31 +615,34 @@ Resources:
       BuildMethod: esbuild
       BuildProperties:
         Target: es2022
+        External: [node:sqlite]
         EntryPoints: [src/handlers/schemes.ts]
     Properties:
-      Handler: src/handlers/schemes.handler
+      Handler: schemes.handler
       CodeUri: .
-      Description: SchemeSaathi — scheme catalogue, eligibility check; admin audit-log reads.
+      Description: SchemeSaathi — scheme catalogue, eligibility check, admin scheme upsert & audit-log reads.
       Policies:
-        - DynamoDBReadPolicy:
+        - DynamoDBCrudPolicy:
             TableName: !Ref KrishiFlagTable
       Events:
-        ListSchemes:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/schemes', Method: GET }
-        GetScheme:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/schemes/{id}', Method: GET }
-        EligibilityCheck:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/schemes/eligibility-check', Method: POST }
-        AuditLogs:
-          Type: Api
-          Properties: { RestApiId: !Ref KrishiApi, Path: '/audit-logs', Method: GET }
+        ListSchemes: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/schemes', Method: GET } }
+        CreateScheme: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/schemes', Method: POST } }
+        GetScheme: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/schemes/{id}', Method: GET } }
+        EligibilityCheck: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/schemes/eligibility-check', Method: POST } }
+        AuditLogs: { Type: Api, Properties: { RestApiId: !Ref KrishiApi, Path: '/audit-logs', Method: GET } }
 
 Outputs:
+  WebsiteUrl:
+    Description: Live HTTPS CloudFront URL serving the KRISHI360 AI website and /api/* backend.
+    Value: !Sub https://${WebsiteDistribution.DomainName}
+  WebsiteBucketName:
+    Description: S3 bucket for static frontend assets (dist/).
+    Value: !Ref WebsiteBucket
+  CloudFrontDistributionId:
+    Description: CloudFront distribution ID for cache invalidations.
+    Value: !Ref WebsiteDistribution
   ApiBaseUrl:
-    Description: Base URL for the frontend VITE_API_BASE_URL.
+    Description: Direct API Gateway base URL.
     Value: !Sub https://${KrishiApi}.execute-api.${AWS::Region}.amazonaws.com/${EnvironmentName}
   UserPoolId:
     Value: !Ref KrishiUserPool

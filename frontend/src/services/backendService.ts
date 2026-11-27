@@ -49,6 +49,14 @@ export interface BackendEndpointInfo {
   description: string
 }
 
+export interface S3BucketInspection {
+  configured: boolean
+  reachable: boolean
+  bucketName: string
+  status: 'ACTIVE' | 'NOT_FOUND' | 'NOT_CONFIGURED' | 'UNREACHABLE'
+  message: string
+}
+
 export interface BackendStatusSnapshot {
   service: string
   dataBackend: 'memory' | 'sqlite' | 'dynamodb'
@@ -56,11 +64,15 @@ export interface BackendStatusSnapshot {
   usersTableName: string
   flagTableName: string
   tableName: string
+  uploadBucketName: string
   customEndpointConfigured: boolean
   awsCredentialsConfigured: boolean
   s3UploadsConfigured: boolean
+  s3: S3BucketInspection
   aiProvider: 'disabled' | 'heuristic' | 'bedrock' | 'gemini'
-  authMode: 'dev' | 'cognito'
+  bedrockConfigured: boolean
+  bedrockModelId: string
+  authMode: 'dev' | 'session' | 'cognito'
   dynamo: DynamoTableInspection
   usersDynamo: DynamoTableInspection
   flagDynamo: DynamoTableInspection

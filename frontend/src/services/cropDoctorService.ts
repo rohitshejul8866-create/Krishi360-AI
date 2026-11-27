@@ -179,7 +179,7 @@ export const cropDoctorService = {
       }
     }
 
-    const res = await fetch('/api/ai/crop-analyze', {
+    const res = await fetch(`${apiClient.baseUrl}/ai/crop-analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -192,10 +192,11 @@ export const cropDoctorService = {
     })
     const json = (await res.json().catch(() => ({}))) as {
       data?: { analysis?: BackendAiAnalysis }
-      error?: string
+      error?: string | { message?: string }
     }
     if (!res.ok || !json.data?.analysis) {
-      throw new Error(json.error || 'Gemini Vision crop analysis failed.')
+      const msg = typeof json.error === 'string' ? json.error : json.error?.message
+      throw new Error(msg || 'Gemini Vision crop analysis failed.')
     }
 
     const ai = json.data.analysis

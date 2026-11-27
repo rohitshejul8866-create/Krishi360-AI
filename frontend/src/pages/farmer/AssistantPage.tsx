@@ -20,6 +20,7 @@ import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
+import { apiClient } from '../../services/apiClient'
 import { useApp } from '../../services/store'
 import {
   deleteFirebaseCopilotSession,
@@ -180,7 +181,7 @@ export function AssistantPage() {
     setTyping(true)
 
     try {
-      const res = await fetch('/api/ai/chat', {
+      const res = await fetch(`${apiClient.baseUrl}/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -198,9 +199,12 @@ export function AssistantPage() {
           },
         }),
       })
-      const json = (await res.json().catch(() => ({}))) as ChatApiResponse
+      const json = (await res.json().catch(() => ({}))) as Omit<ChatApiResponse, 'error'> & {
+        error?: string | { message?: string }
+      }
       if (!res.ok || !json.data) {
-        throw new Error(json.error || 'Gemini Copilot request failed.')
+        const msg = typeof json.error === 'string' ? json.error : json.error?.message
+        throw new Error(msg || 'Gemini Copilot request failed.')
       }
 
       const assistantTurn: ChatMessage = {
