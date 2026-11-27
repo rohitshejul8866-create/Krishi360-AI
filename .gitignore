@@ -9,3 +9,14 @@ coverage/
 .data/
 dist-server/
 .aws-sam/
+.aws-sam/
+node_modules/
+.env
+.env.*
+samconfig.toml
+
+.aws-sam/
+.env
+.env.*
+samconfig.toml
+node_modules/

@@ -166,7 +166,7 @@ Resources:
             Compress: true
             # AWS Managed CachingDisabled + AllViewerExceptHostHeader
             CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
-            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e296692
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
             FunctionAssociations:
               - EventType: viewer-request
                 FunctionARN: !GetAtt StripApiPrefixFunction.FunctionARN
@@ -227,9 +227,6 @@ Resources:
           HttpMethod: POST
           ThrottlingBurstLimit: 5
           ThrottlingRateLimit: 2
-      AccessLogSetting:
-        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
-        Format: '{"requestId":"$context.requestId","route":"$context.resourcePath","method":"$context.httpMethod","status":"$context.status","latencyMs":"$context.responseLatency"}'
 
   # ----------------------------------------------------------- Cognito ----
   KrishiUserPool:
@@ -238,7 +235,7 @@ Resources:
       UserPoolName: !Sub krishi360-${EnvironmentName}
       UsernameAttributes: [email]
       AutoVerifiedAttributes: [email]
-      MfaConfiguration: 'OPTIONAL'
+      MfaConfiguration: 'OFF'
       Policies:
         PasswordPolicy:
           MinimumLength: 10
