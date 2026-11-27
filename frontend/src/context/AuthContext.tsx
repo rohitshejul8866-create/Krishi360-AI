@@ -180,6 +180,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setAuthProvider('firebase')
       addAuditLog(next.name, next.role, 'Signed in with Google', 'Firebase Authentication')
       return next
+    } catch (err) {
+      const code = (err as { code?: string } | null)?.code ?? ''
+      const message = err instanceof Error ? err.message : String(err)
+      if (code === 'auth/unauthorized-domain' || message.includes('auth/unauthorized-domain')) {
+        const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain'
+        throw new Error(
+          `Domain "${host}" is not authorized for Google Sign-In yet. Add "${host}" in Firebase Console → Authentication → Settings → Authorized domains (Project: marine-medley-fc62s).`,
+        )
+      }
+      if (code === 'auth/popup-blocked' || message.includes('auth/popup-blocked')) {
+        throw new Error('Sign-in popup was blocked by your browser. Allow popups for this site and try again.')
+      }
+      throw err
     } finally {
       setLoading(false)
     }

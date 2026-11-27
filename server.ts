@@ -75,12 +75,15 @@ async function startServer() {
 
   const nodeEnv = process.env.NODE_ENV ?? 'development';
   const defaultAuthMode = nodeEnv === 'production' ? 'session' : 'dev';
+  const hasAwsKeys = Boolean(
+    process.env.AWS_ACCESS_KEY_ID?.trim() && process.env.AWS_SECRET_ACCESS_KEY?.trim(),
+  );
 
   const config = loadConfig({
     ...process.env,
     NODE_ENV: nodeEnv,
     AUTH_MODE: process.env.AUTH_MODE ?? defaultAuthMode,
-    DATA_BACKEND: process.env.DATA_BACKEND ?? 'sqlite',
+    DATA_BACKEND: process.env.DATA_BACKEND ?? (hasAwsKeys ? 'dynamodb' : 'sqlite'),
     AI_PROVIDER:
       process.env.AI_PROVIDER ??
       (process.env.GEMINI_API_KEY?.trim()

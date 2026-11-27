@@ -53,6 +53,12 @@ export const apiClient = {
       throw new Error(msg)
     }
 
+    if (!parsed || typeof parsed !== 'object' || !('data' in parsed)) {
+      throw new Error(
+        'Backend API server is not reachable at this URL. Use "Continue with Google" or set VITE_API_BASE_URL to your deployed AWS API endpoint.',
+      )
+    }
+
     return parsed as ApiEnvelope<T>
   },
 
