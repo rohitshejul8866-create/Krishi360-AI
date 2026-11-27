@@ -1,0 +1,539 @@
+{
+  "entities": {
+    "UserSummary": {
+      "title": "UserSummary",
+      "description": "Non-PII public user summary record for display and relational ownership verification.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Firebase Auth UID matching the document ID."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "User display name."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["farmer", "expert", "admin"],
+          "description": "Application role assigned by verified system/admin."
+        },
+        "photoUrl": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Optional avatar image URL."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last update timestamp."
+        }
+      },
+      "required": ["uid", "displayName", "role", "createdAt", "updatedAt"]
+    },
+    "UserPrivateProfile": {
+      "title": "UserPrivateProfile",
+      "description": "Isolated PII profile document containing email, phone, and farm location.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "location": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "organisation": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "specialisation": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "location", "createdAt", "updatedAt"]
+    },
+    "AdminRegistry": {
+      "title": "AdminRegistry",
+      "description": "Trusted administrator lookup collection for role verification.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 254
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt"]
+    },
+    "Farm": {
+      "title": "Farm",
+      "description": "Farmer-owned farm record with bounded plots array and optional map coordinates.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "areaHa": {
+          "type": "number"
+        },
+        "soilType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "irrigationType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "plots": {
+          "type": "array",
+          "description": "Bounded list of up to 50 plots belonging to this farm."
+        },
+        "centerLat": {
+          "type": "number"
+        },
+        "centerLng": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "name", "location", "areaHa", "soilType", "irrigationType", "plots", "createdAt", "updatedAt"]
+    },
+    "SoilReading": {
+      "title": "SoilReading",
+      "description": "JalSense soil moisture and irrigation recommendation reading.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "farmId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "plotId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "soilMoisture": {
+          "type": "number"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["manual", "simulated"]
+        },
+        "weather": {
+          "type": "object"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "recommendation": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "farmId", "plotId", "soilMoisture", "source", "createdAt"]
+    },
+    "StorageBatch": {
+      "title": "StorageBatch",
+      "description": "GrainGuard post-harvest storage batch with bounded inspection history.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "crop": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "quantityKg": {
+          "type": "number"
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "tempC": {
+          "type": "number"
+        },
+        "humidity": {
+          "type": "number"
+        },
+        "minTemp": {
+          "type": "number"
+        },
+        "maxTemp": {
+          "type": "number"
+        },
+        "maxHumidity": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["normal", "warning", "critical"]
+        },
+        "inspections": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "code", "crop", "quantityKg", "location", "tempC", "humidity", "minTemp", "maxTemp", "maxHumidity", "status", "inspections", "createdAt", "updatedAt"]
+    },
+    "CropCase": {
+      "title": "CropCase",
+      "description": "CropDoctor AI diagnostic case with AI analysis and optional expert review.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "farmerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "crop": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "plantPart": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "location": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "symptoms": {
+          "type": "string",
+          "maxLength": 1500
+        },
+        "imageUrl": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "alternatives": {
+          "type": "array"
+        },
+        "observedSymptoms": {
+          "type": "array"
+        },
+        "explanation": {
+          "type": "string",
+          "maxLength": 2500
+        },
+        "nextSteps": {
+          "type": "array"
+        },
+        "recommendExpert": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["gemini", "bedrock", "heuristic"]
+        },
+        "modelId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "uncertainty": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "simulated": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["new", "ai_review", "expert_review", "resolved"]
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["low", "medium", "high"]
+        },
+        "reviewStatus": {
+          "type": "string",
+          "enum": ["pending", "in_review", "completed", "needs_info"]
+        },
+        "expertNotes": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "expertGuidance": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "reviewedBy": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "reviewedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "farmerName", "crop", "plantPart", "location", "symptoms", "imageUrl", "condition", "confidence", "alternatives", "observedSymptoms", "explanation", "nextSteps", "recommendExpert", "status", "priority", "reviewStatus", "createdAt", "updatedAt"]
+    },
+    "WorkspaceState": {
+      "title": "WorkspaceState",
+      "description": "User workspace preferences, saved schemes, applications, custom crops, mandi alerts, and irrigation schedules.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "savedSchemeIds": {
+          "type": "array"
+        },
+        "applications": {
+          "type": "array"
+        },
+        "mandiAlerts": {
+          "type": "array"
+        },
+        "irrigationSchedules": {
+          "type": "array"
+        },
+        "customCrops": {
+          "type": "array"
+        },
+        "preferences": {
+          "type": "object"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "savedSchemeIds", "applications", "mandiAlerts", "irrigationSchedules", "customCrops", "preferences", "createdAt", "updatedAt"]
+    },
+    "CopilotSession": {
+      "title": "CopilotSession",
+      "description": "Multi-turn Krishi360 AI Copilot conversation thread.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["grounded", "fast"]
+        },
+        "messages": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "title", "mode", "messages", "createdAt", "updatedAt"]
+    },
+    "UserNotification": {
+      "title": "UserNotification",
+      "description": "User notification record scoped to the owner.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["info", "success", "warning", "critical"]
+        },
+        "audience": {
+          "type": "string",
+          "enum": ["farmer", "expert", "admin", "all"]
+        },
+        "read": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ownerId", "title", "body", "severity", "audience", "read", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserSummary" },
+      "description": "Public/non-PII user summary record keyed by Firebase UID."
+    },
+    "/users/{userId}/private/profile": {
+      "schema": { "$ref": "#/entities/UserPrivateProfile" },
+      "description": "Owner-isolated PII user profile storing email, phone, and location."
+    },
+    "/admins/{userId}": {
+      "schema": { "$ref": "#/entities/AdminRegistry" },
+      "description": "Server/bootstrapped admin registry for RBAC lookups."
+    },
+    "/users/{userId}/farms/{farmId}": {
+      "schema": { "$ref": "#/entities/Farm" },
+      "description": "User-owned farm and plot collection."
+    },
+    "/users/{userId}/soilReadings/{readingId}": {
+      "schema": { "$ref": "#/entities/SoilReading" },
+      "description": "User-owned JalSense soil moisture reading logs."
+    },
+    "/users/{userId}/storageBatches/{batchId}": {
+      "schema": { "$ref": "#/entities/StorageBatch" },
+      "description": "User-owned GrainGuard storage batches and bounded inspection logs."
+    },
+    "/users/{userId}/cropCases/{caseId}": {
+      "schema": { "$ref": "#/entities/CropCase" },
+      "description": "User-owned CropDoctor AI cases."
+    },
+    "/users/{userId}/workspace/state": {
+      "schema": { "$ref": "#/entities/WorkspaceState" },
+      "description": "User-owned workspace state (saved schemes, applications, alerts, schedules, crops, preferences)."
+    },
+    "/users/{userId}/copilotSessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/CopilotSession" },
+      "description": "User-owned multi-turn Gemini Copilot chat history."
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/UserNotification" },
+      "description": "User-owned portal notifications."
+    }
+  }
+}

@@ -33,8 +33,11 @@ export interface SqliteInspection {
   journalMode: string
   integrityOk: boolean
   fileSizeBytes: number
+  usersItems: number
+  flagItems: number
   totalItems: number
   indexCount: number
+  tables: string[]
   message: string
 }
 
@@ -50,16 +53,21 @@ export interface BackendStatusSnapshot {
   service: string
   dataBackend: 'memory' | 'sqlite' | 'dynamodb'
   awsRegion: string
+  usersTableName: string
+  flagTableName: string
   tableName: string
   customEndpointConfigured: boolean
   awsCredentialsConfigured: boolean
   s3UploadsConfigured: boolean
-  aiProvider: 'disabled' | 'heuristic' | 'bedrock'
+  aiProvider: 'disabled' | 'heuristic' | 'bedrock' | 'gemini'
   authMode: 'dev' | 'cognito'
   dynamo: DynamoTableInspection
+  usersDynamo: DynamoTableInspection
+  flagDynamo: DynamoTableInspection
   sqlite?: SqliteInspection
   counts: Record<BackendEntityName, number>
   singleTableSchema: Array<{
+    table: 'Users Login Table' | 'Flag Data Table'
     entity: string
     pkPattern: string
     skPattern: string

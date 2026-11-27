@@ -74,11 +74,13 @@ export class BedrockAnalysisService implements AiAnalysisService {
       `Plant part: ${input.plantPart}`,
       `Location: ${input.location}`,
       `Reported symptoms: ${input.symptoms}`,
-      input.imageKey ? 'An image of the affected plant is attached.' : 'No image was provided; rely on the reported symptoms only.',
+      input.imageKey && this.deps.bucket
+        ? 'An image of the affected plant is attached.'
+        : 'No image was provided; rely on the reported symptoms only.',
     ].join('\n');
 
     const content: Array<Record<string, unknown>> = [{ text: userText }];
-    if (input.imageKey) {
+    if (input.imageKey && this.deps.bucket) {
       const image = await this.fetchImage(input.imageKey);
       content.push({ image: { format: image.format, source: { bytes: image.bytes } } });
     }

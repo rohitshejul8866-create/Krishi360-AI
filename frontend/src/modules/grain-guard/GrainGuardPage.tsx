@@ -13,6 +13,7 @@ import { Progress } from '../../components/ui/Progress'
 import { DataTable } from '../../components/ui/Table'
 import type { Column } from '../../components/ui/Table'
 import { useApp } from '../../services/store'
+import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 import { storageService } from '../../services/storageService'
 import { CROP_NAMES } from '../../data/crops'
@@ -20,6 +21,7 @@ import { formatDate, formatNumber, makeId } from '../../services/utils'
 import type { StorageBatch } from '../../types'
 
 export function GrainGuardPage() {
+  const { user } = useAuth()
   const { storageBatches, addStorageBatch, addInspection, addStorageReading } = useApp()
   const { show } = useToast()
   const [createOpen, setCreateOpen] = useState(false)
@@ -27,6 +29,8 @@ export function GrainGuardPage() {
   const [inspectionNote, setInspectionNote] = useState('')
   const [readingTemp, setReadingTemp] = useState(25)
   const [readingHumidity, setReadingHumidity] = useState(66)
+  const [creatingBatch, setCreatingBatch] = useState(false)
+  const [loggingInspection, setLoggingInspection] = useState(false)
   const [form, setForm] = useState({
     crop: CROP_NAMES[0],
     quantityKg: 5000,
@@ -63,13 +67,17 @@ export function GrainGuardPage() {
 
   const createBatch = async (event: FormEvent) => {
     event.preventDefault()
+    if (!form.location.trim() || !Number.isFinite(form.quantityKg) || form.quantityKg <= 0) {
+      show('Invalid batch details', 'Provide a storage location and quantity greater than 0 kg.', 'warning')
+      return
+    }
     const status = storageService.evaluate(form.tempC, form.humidity, form)
     const batch: StorageBatch = {
       id: makeId('batch'),
       code: `GB-${Math.floor(2400 + Math.random() * 900)}`,
       crop: form.crop,
       quantityKg: form.quantityKg,
-      location: form.location,
+      location: form.location.trim(),
       tempC: form.tempC,
       humidity: form.humidity,
       minTemp: form.minTemp,
@@ -79,16 +87,33 @@ export function GrainGuardPage() {
       createdAt: new Date().toISOString(),
       inspections: [],
     }
-    const created = await addStorageBatch(batch)
-    setCreateOpen(false)
-    show('Storage batch created', `${created.code} status: ${created.status} saved to backend.`, created.status === 'critical' ? 'critical' : 'success')
+    setCreatingBatch(true)
+    try {
+      const created = await addStorageBatch(batch)
+      setCreateOpen(false)
+      show('Storage batch created', `${created.code} (${created.status}) saved to database.`, created.status === 'critical' ? 'critical' : 'success')
+    } catch (err) {
+      show('Unable to save storage batch', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    } finally {
+      setCreatingBatch(false)
+    }
   }
 
   const logInspection = async () => {
-    if (!selected || !inspectionNote.trim()) return show('Inspection note required', 'Add a short note before logging.', 'warning')
-    await addInspection(selected.id, inspectionNote.trim(), 'Ramesh Patil')
-    setInspectionNote('')
-    show('Inspection logged', 'The record was saved to batch history.', 'success')
+    if (!selected || !inspectionNote.trim()) {
+      show('Inspection note required', 'Add a short note before logging.', 'warning')
+      return
+    }
+    setLoggingInspection(true)
+    try {
+      await addInspection(selected.id, inspectionNote.trim(), user?.name ?? 'Farmer')
+      setInspectionNote('')
+      show('Inspection logged', 'The record was saved to batch history.', 'success')
+    } catch (err) {
+      show('Unable to log inspection', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    } finally {
+      setLoggingInspection(false)
+    }
   }
 
   const logReading = async () => {
@@ -190,7 +215,7 @@ export function GrainGuardPage() {
           </div>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button type="submit">Create batch</Button>
+            <Button type="submit" disabled={creatingBatch}>{creatingBatch ? 'Saving…' : 'Create batch'}</Button>
           </div>
         </form>
       </Modal>
@@ -247,7 +272,7 @@ export function GrainGuardPage() {
               <Field label="Add inspection note">
                 <Textarea value={inspectionNote} onChange={(event) => setInspectionNote(event.target.value)} placeholder="Describe the observed storage condition…" />
               </Field>
-              <div className="mt-3 flex justify-end"><Button size="sm" onClick={() => void logInspection()}>Log inspection</Button></div>
+              <div className="mt-3 flex justify-end"><Button size="sm" onClick={() => void logInspection()} disabled={loggingInspection}>{loggingInspection ? 'Saving…' : 'Log inspection'}</Button></div>
             </div>
           </div>
         ) : null}

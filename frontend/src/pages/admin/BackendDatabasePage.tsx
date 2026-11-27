@@ -400,10 +400,10 @@ export function BackendDatabasePage() {
 
   return (
     <div>
-      <PageHeader
+    <PageHeader
         eyebrow="Infrastructure & Persistence"
-        title="Backend & Single-Table Database"
-        description="Inspect active ACID SQLite WAL or AWS DynamoDB single-table persistence, live repository records across 8 collections, integrity checks, and connected API routes."
+        title="Backend & 2-Table Database"
+        description="Inspect 2-table persistence: Table 1 stores only user login details, while Table 2 (Flag Table) stores user profiles, platform flags, and all domain collections."
         badge={
           <Badge tone={status?.dataBackend === 'memory' ? 'sage' : 'forest'}>
             {status ? `${status.dataBackend.toUpperCase()} · ${status.awsRegion}` : 'Connecting…'}
@@ -481,15 +481,15 @@ export function BackendDatabasePage() {
           tone={status?.dataBackend === 'memory' ? 'sage' : 'forest'}
         />
         <StatCard
-          label={status?.sqlite ? 'SQLite Storage' : 'DynamoDB Table'}
+          label={status?.sqlite ? 'SQLite Storage' : 'DynamoDB Tables (2)'}
           value={
             status?.sqlite
               ? `${(status.sqlite.fileSizeBytes / 1024).toFixed(1)} KB`
-              : status?.tableName ?? 'krishi360-dev'
+              : `${status?.usersTableName ?? 'krishi360-users-dev'} + ${status?.flagTableName ?? 'krishi360-flag-dev'}`
           }
           detail={
             status?.sqlite
-              ? `${status.sqlite.journalMode} mode · ${status.sqlite.indexCount} indexes`
+              ? `${status.sqlite.usersItems} login + ${status.sqlite.flagItems} flag items`
               : status
                 ? `${status.dynamo.tableStatus} · ${status.awsRegion}`
                 : 'Checking storage'
@@ -534,8 +534,8 @@ export function BackendDatabasePage() {
         <div className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
           <Card>
             <CardHeader
-              title="Single-table architecture"
-              description="All repositories map onto the unified KRISHI360 single-table PK/SK/GSI schema (SQLite WAL locally, DynamoDB on AWS)."
+              title="2-table DynamoDB & SQLite architecture"
+              description="Table 1 stores only user login details (credentials, email & role lookups); Table 2 (Flag Table) stores user profiles, flags, and all module collections."
               icon={<Database size={18} />}
               action={
                 status?.sqlite ? (
@@ -549,21 +549,38 @@ export function BackendDatabasePage() {
             />
             {status?.sqlite ? (
               <div className="mb-4 rounded-2xl border border-sage/50 bg-soft-sage/45 px-4 py-3 text-xs leading-relaxed text-ink">
-                <p className="font-bold text-forest">SQLite persistence engine</p>
+                <p className="font-bold text-forest">SQLite 2-table persistence engine (krishi_users + krishi_flag_items)</p>
                 <p className="mt-1 text-muted">{status.sqlite.message}</p>
                 <p className="mt-1 font-mono text-[11px] text-forest">Path: {status.sqlite.dbPath}</p>
               </div>
             ) : null}
-            <div className="mb-4 rounded-2xl border border-line/80 bg-soft-sage/30 px-4 py-3 text-xs leading-relaxed text-ink">
-              <p className="font-bold text-forest">Cloud DynamoDB status</p>
-              <p className="mt-1 text-muted">
-                {status?.dynamo.message ?? 'Loading database diagnostic status...'}
-              </p>
+            <div className="mb-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-line/80 bg-soft-sage/30 px-4 py-3 text-xs leading-relaxed text-ink">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-bold text-forest">Table 1 · Users Login</p>
+                  {status ? <StatusPill status={status.usersDynamo.tableStatus} /> : null}
+                </div>
+                <p className="mt-1 font-mono text-[11px] text-ink">{status?.usersTableName ?? 'krishi360-users-dev'}</p>
+                <p className="mt-1 text-muted">
+                  {status?.usersDynamo.message ?? 'Loading user login table status...'}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-line/80 bg-soft-sage/30 px-4 py-3 text-xs leading-relaxed text-ink">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-bold text-forest">Table 2 · Flag & Domain Data</p>
+                  {status ? <StatusPill status={status.flagDynamo.tableStatus} /> : null}
+                </div>
+                <p className="mt-1 font-mono text-[11px] text-ink">{status?.flagTableName ?? 'krishi360-flag-dev'}</p>
+                <p className="mt-1 text-muted">
+                  {status?.flagDynamo.message ?? 'Loading flag table status...'}
+                </p>
+              </div>
             </div>
             <div className="scroll-thin overflow-x-auto rounded-2xl border border-line/80">
-              <table className="w-full min-w-[540px] border-collapse text-left text-xs">
+              <table className="w-full min-w-[640px] border-collapse text-left text-xs">
                 <thead>
                   <tr className="bg-soft-sage/45 text-[11px] font-extrabold tracking-[0.08em] text-muted uppercase">
+                    <th className="px-3.5 py-3">Table</th>
                     <th className="px-3.5 py-3">Entity</th>
                     <th className="px-3.5 py-3">PK</th>
                     <th className="px-3.5 py-3">SK</th>
@@ -573,7 +590,10 @@ export function BackendDatabasePage() {
                 </thead>
                 <tbody className="divide-y divide-line/70 bg-white/70">
                   {(status?.singleTableSchema ?? []).map((row) => (
-                    <tr key={row.entity} className="hover:bg-soft-sage/20">
+                    <tr key={`${row.table}-${row.entity}`} className="hover:bg-soft-sage/20">
+                      <td className="px-3.5 py-2.5">
+                        <Badge tone={row.table === 'Users Login Table' ? 'forest' : 'sage'}>{row.table}</Badge>
+                      </td>
                       <td className="px-3.5 py-2.5 font-bold text-ink">{row.entity}</td>
                       <td className="px-3.5 py-2.5 font-mono text-forest">{row.pkPattern}</td>
                       <td className="px-3.5 py-2.5 font-mono text-muted">{row.skPattern}</td>
@@ -641,8 +661,13 @@ export function BackendDatabasePage() {
                     ready: true,
                   },
                   {
-                    key: 'DYNAMODB_TABLE_NAME',
-                    value: status?.tableName ?? 'krishi360-dev',
+                    key: 'DYNAMODB_USERS_TABLE_NAME',
+                    value: status?.usersTableName ?? 'krishi360-users-dev',
+                    ready: true,
+                  },
+                  {
+                    key: 'DYNAMODB_FLAG_TABLE_NAME',
+                    value: status?.flagTableName ?? 'krishi360-flag-dev',
                     ready: true,
                   },
                   {
@@ -687,9 +712,9 @@ export function BackendDatabasePage() {
             title="Live repository records"
             description={`Showing live records queried from ${
               status?.dataBackend === 'dynamodb'
-                ? `AWS DynamoDB table "${status.tableName}"`
+                ? `AWS DynamoDB (${status.usersTableName} + ${status.flagTableName})`
                 : status?.dataBackend === 'sqlite'
-                  ? `persistent SQLite database (${status.sqlite?.dbPath ?? '.data/krishi360.db'})`
+                  ? `persistent 2-table SQLite database (${status.sqlite?.dbPath ?? '.data/krishi360.db'})`
                   : 'local Memory repository'
             }. Click any row to inspect JSON.`}
             icon={<Table2 size={18} />}

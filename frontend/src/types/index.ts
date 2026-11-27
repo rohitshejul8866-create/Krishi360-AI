@@ -29,6 +29,8 @@ export interface Plot {
   soilMoisture: number
   lastIrrigated: string
   status: 'healthy' | 'watch' | 'attention'
+  lat?: number
+  lng?: number
 }
 
 export interface Farm {
@@ -40,6 +42,8 @@ export interface Farm {
   soilType: string
   irrigationType: string
   plots: Plot[]
+  centerLat?: number
+  centerLng?: number
 }
 
 export interface Crop {
@@ -73,6 +77,10 @@ export interface CropCase {
   explanation: string
   nextSteps: string[]
   recommendExpert: boolean
+  provider?: 'gemini' | 'bedrock' | 'heuristic'
+  modelId?: string
+  uncertainty?: string
+  simulated?: boolean
   status: CaseStatus
   priority: Priority
   submittedAt: string
@@ -90,6 +98,7 @@ export interface AnalysisInput {
   symptoms: string
   imageUrl: string
   imageName: string
+  imageFile?: File | null
 }
 
 export interface AnalysisResult {
@@ -101,6 +110,10 @@ export interface AnalysisResult {
   nextSteps: string[]
   recommendExpert: boolean
   disclaimer: string
+  provider?: 'gemini' | 'bedrock' | 'heuristic'
+  modelId?: string
+  uncertainty?: string
+  simulated?: boolean
 }
 
 export interface MandiPrice {
@@ -231,11 +244,19 @@ export interface AuditLog {
   timestamp: string
 }
 
+export interface GroundingSource {
+  title: string
+  uri: string
+}
+
 export interface ChatMessage {
   id: string
   sender: 'user' | 'assistant'
   text: string
   time: string
+  modelUsed?: string
+  groundingSources?: GroundingSource[]
+  safetyFiltered?: boolean
 }
 
 export interface PlatformSettings {

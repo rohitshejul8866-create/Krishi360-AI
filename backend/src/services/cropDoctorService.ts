@@ -112,13 +112,17 @@ export class CropDoctorService {
   async requestAnalysis(
     user: AuthUser,
     id: string,
-    imageKey: string | undefined,
+    options: {
+      imageKey?: string;
+      imageBase64?: string;
+      imageMimeType?: 'image/jpeg' | 'image/png' | 'image/webp';
+    },
     logger: Logger,
   ): Promise<{ case: CropCase; analysis: AiAnalysis }> {
     const cropCase = await this.getAccessible(user, id);
     if (user.role === 'expert') throw new ForbiddenError('Experts review cases; analysis is requested by the owner.');
-    if (imageKey) this.uploads.assertKeyBelongsToCase(cropCase, imageKey);
-    const effectiveKey = imageKey ?? cropCase.imageKey;
+    if (options.imageKey) this.uploads.assertKeyBelongsToCase(cropCase, options.imageKey);
+    const effectiveKey = options.imageKey ?? cropCase.imageKey;
 
     const analysis = await this.ai.analyze({
       crop: cropCase.crop,
@@ -126,6 +130,9 @@ export class CropDoctorService {
       location: cropCase.location,
       symptoms: cropCase.symptoms,
       ...(effectiveKey ? { imageKey: effectiveKey } : {}),
+      ...(options.imageBase64 && options.imageMimeType
+        ? { imageData: { base64: options.imageBase64, mimeType: options.imageMimeType } }
+        : {}),
     });
 
     const updated: CropCase = {

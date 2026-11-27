@@ -1,12 +1,12 @@
 import 'dotenv/config';
 import type { APIGatewayProxyEvent } from 'aws-lambda';
-import { GoogleGenAI } from '@google/genai';
 import express from 'express';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer as createViteServer } from 'vite';
+import { z } from 'zod';
 import { loadConfig } from './backend/src/config/env';
 import { buildContainer, setContainer } from './backend/src/container';
 import { buildAuthRoutes } from './backend/src/handlers/auth';
@@ -20,6 +20,8 @@ import { buildGrainGuardRoutes } from './backend/src/handlers/storage';
 import { buildWorkspaceRoutes } from './backend/src/handlers/workspace';
 import { closeSqliteDbs } from './backend/src/repositories/sqlite/client';
 import { seedDemoPortalData } from './backend/src/seed/demoPortalSeed';
+import { runKrishiCopilotChat, runLiveIntelligenceBrief } from './backend/src/services/ai/copilot';
+import { createAiService } from './backend/src/services/ai/factory';
 import { ensureDynamoTable } from './backend/src/services/awsDatabaseService';
 
 interface CompiledRoute {
@@ -75,12 +77,19 @@ async function startServer() {
     NODE_ENV: process.env.NODE_ENV ?? 'development',
     AUTH_MODE: process.env.AUTH_MODE ?? 'dev',
     DATA_BACKEND: process.env.DATA_BACKEND ?? 'sqlite',
-    AI_PROVIDER: process.env.AI_PROVIDER ?? 'heuristic',
+    AI_PROVIDER:
+      process.env.AI_PROVIDER ??
+      (process.env.GEMINI_API_KEY?.trim()
+        ? 'gemini'
+        : process.env.AWS_BEARER_TOKEN_BEDROCK || process.env.AWS_BEARER_TOKEN
+          ? 'bedrock'
+          : 'gemini'),
     ALLOWED_ORIGINS: process.env.ALLOWED_ORIGINS ?? allowedOrigins.join(','),
     PORT: String(port),
   });
 
   const container = buildContainer(config);
+  const aiService = createAiService(config);
   setContainer(container);
 
   if (config.dataBackend === 'dynamodb') {
@@ -114,73 +123,115 @@ async function startServer() {
   const app = express();
   app.disable('x-powered-by');
   const httpServer = http.createServer(app);
-  app.post('/api/ai/live-intelligence', express.json(), async (req, res) => {
-    try {
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        return res.status(500).json({ error: 'Gemini API key not configured' });
-      }
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-      });
+  const liveIntelBodySchema = z
+    .object({
+      region: z.string().trim().min(2).max(120).optional(),
+    })
+    .optional();
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: 'Provide a real-time agricultural market and weather intelligence brief for farmers in Maharashtra (Nashik region) covering tomato, wheat, onion, and grapes prices, weather forecast, and pest/disease alerts.',
-        config: {
-          systemInstruction: 'You are KRISHI360 AI, an advanced agricultural market and meteorological analyst. Return JSON with keys: summary, mandiUpdates (array of object with crop, priceRange, trend), weatherBrief, pestAlert, and sources (array of strings).',
-          tools: [{ googleSearch: {} }],
-          responseMimeType: 'application/json',
-        }
-      });
-
-      let data;
-      try {
-        data = JSON.parse(response.text || '{}');
-      } catch {
-        data = { summary: response.text, mandiUpdates: [], weatherBrief: 'Normal conditions', pestAlert: 'None', sources: [] };
-      }
-
-      res.json({ data, groundingMetadata: response.candidates?.[0]?.groundingMetadata ?? null });
-    } catch (err: any) {
-      console.error('Live intelligence error:', err);
-      res.status(500).json({ error: err.message || 'AI service error' });
-    }
+  const chatBodySchema = z.object({
+    message: z.string().trim().min(1).max(3000),
+    mode: z.enum(['grounded', 'fast']).default('grounded'),
+    history: z
+      .array(
+        z.object({
+          sender: z.enum(['user', 'assistant']),
+          text: z.string().trim().min(1).max(3000),
+        }),
+      )
+      .max(24)
+      .default([]),
+    farmContext: z
+      .object({
+        farmerName: z.string().trim().max(120).optional(),
+        location: z.string().trim().max(160).optional(),
+        crops: z.array(z.string().trim().max(80)).max(20).optional(),
+        plotsCount: z.number().int().min(0).max(500).optional(),
+        openCasesCount: z.number().int().min(0).max(500).optional(),
+        criticalStorageCount: z.number().int().min(0).max(500).optional(),
+        activeAlertsCount: z.number().int().min(0).max(500).optional(),
+      })
+      .optional(),
   });
 
-  app.post('/api/ai/chat', express.json(), async (req, res) => {
+  const cropAnalyzeBodySchema = z.object({
+    crop: z.string().trim().min(1).max(80),
+    plantPart: z.string().trim().min(1).max(80),
+    location: z.string().trim().max(160).default('India'),
+    symptoms: z.string().trim().max(1500).default(''),
+    imageBase64: z.string().min(1).max(11_000_000).optional(),
+    imageMimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).optional(),
+  });
+
+  app.post('/api/ai/live-intelligence', express.json({ limit: '64kb' }), async (req, res) => {
     try {
-      const { message } = req.body;
-      const apiKey = process.env.GEMINI_API_KEY;
-      if (!apiKey) {
-        return res.status(500).json({ error: 'Gemini API key not configured' });
-      }
-      const ai = new GoogleGenAI({
-        apiKey,
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } }
-      });
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: message || 'Help me with farm management and crop health.',
-        config: {
-          systemInstruction: 'You are KRISHI360 AI, an expert agricultural intelligence advisor connecting crop health, irrigation, storage, market intelligence, and government schemes for farmers in India. Provide concise, expert, practical farming advice.',
-          tools: [{ googleSearch: {} }],
-        }
-      });
-
+      const parsed = liveIntelBodySchema.safeParse(req.body);
+      const region = parsed.success ? parsed.data?.region : undefined;
+      const result = await runLiveIntelligenceBrief(region || 'Nashik, Maharashtra');
       res.json({
-        reply: response.text || 'I am here to assist with your farm management, crop health, and market prices.',
-        groundingMetadata: response.candidates?.[0]?.groundingMetadata ?? null,
+        data: result,
+        groundingMetadata: {
+          groundingSources: result.groundingSources,
+          searchQueries: result.searchQueries,
+        },
       });
-    } catch (err: any) {
-      console.error('AI chat error:', err);
-      res.status(500).json({ error: err.message || 'AI service error' });
+    } catch (err) {
+      console.error('Live intelligence error:', err instanceof Error ? err.message : err);
+      res.status(503).json({
+        error:
+          err instanceof Error && err.message.includes('not configured')
+            ? err.message
+            : 'Unable to fetch grounded agricultural intelligence from Gemini right now.',
+      });
     }
   });
 
-  app.use('/api', express.text({ type: '*/*', limit: '2mb' }));
+  app.post('/api/ai/chat', express.json({ limit: '512kb' }), async (req, res) => {
+    const parsed = chatBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Enter a valid question for KRISHI360 AI Copilot.' });
+    }
+    try {
+      const result = await runKrishiCopilotChat(parsed.data);
+      res.json({ data: result });
+    } catch (err) {
+      console.error('AI chat error:', err instanceof Error ? err.message : err);
+      res.status(503).json({
+        error:
+          err instanceof Error && err.message.includes('not configured')
+            ? err.message
+            : 'KRISHI360 AI Copilot could not reach Gemini right now. Please try again.',
+      });
+    }
+  });
+
+  app.post('/api/ai/crop-analyze', express.json({ limit: '12mb' }), async (req, res) => {
+    const parsed = cropAnalyzeBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: 'Invalid crop analysis payload.' });
+    }
+    try {
+      const { crop, plantPart, location, symptoms, imageBase64, imageMimeType } = parsed.data;
+      const analysis = await aiService.analyze({
+        crop,
+        plantPart,
+        location: location || 'India',
+        symptoms,
+        imageData:
+          imageBase64 && imageMimeType
+            ? { base64: imageBase64, mimeType: imageMimeType }
+            : undefined,
+      });
+      res.json({ data: { analysis } });
+    } catch (err) {
+      console.error('AI crop-analyze error:', err instanceof Error ? err.message : err);
+      res.status(503).json({
+        error: err instanceof Error ? err.message : 'Gemini Vision crop analysis failed.',
+      });
+    }
+  });
+
+  app.use('/api', express.text({ type: '*/*', limit: '12mb' }));
 
   app.use('/api', async (req, res) => {
     const apiPath = req.path === '/' ? '/' : req.path.replace(/\/+$/, '');

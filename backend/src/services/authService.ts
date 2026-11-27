@@ -53,16 +53,26 @@ export class AuthService {
     const email = input.email.trim().toLowerCase();
     const existing = await this.users.getByEmail(email);
     if (existing && existing.role !== 'admin') {
-      throw new ConflictError('An account with this email already exists under another role.');
+      if (existing.status === 'suspended') {
+        throw new ForbiddenError('This account is currently suspended.');
+      }
+      if (!verifyPassword(input.password, existing.passwordHash)) {
+        throw new ConflictError(
+          `An account with this email already exists as a ${existing.role}. Enter that account's current password to promote it to Admin, or use a dedicated admin email.`,
+        );
+      }
     }
 
     const now = nowIso();
     const adminUser: UserAccount = existing
       ? {
           ...existing,
+          role: 'admin',
           name: input.name.trim(),
           status: 'active',
           avatar: initialsFor(input.name),
+          organisation: existing.organisation || 'KRISHI360 AI Operations',
+          specialisation: existing.specialisation || 'Platform administration',
           passwordHash: hashPassword(input.password),
           updatedAt: now,
           version: existing.version + 1,
@@ -193,26 +203,32 @@ export class AuthService {
         if (!emailMatches || !constantTimeEqualsSecret(input.password, envPasscode)) {
           throw new UnauthorizedError('Invalid administrator email or passcode.');
         }
+        if (existing?.role === 'admin' && existing.status === 'suspended') {
+          throw new ForbiddenError('This administrator account is suspended.');
+        }
         const now = nowIso();
-        const adminAccount: UserAccount = existing && existing.role === 'admin'
-          ? existing
-          : {
-              id: 'admin-001',
-              email,
-              name: 'Administrator',
-              role: 'admin',
-              location: 'Platform Operations',
-              phone: 'Not provided',
-              status: 'active',
-              avatar: 'AD',
-              organisation: 'KRISHI360 AI Operations',
-              specialisation: 'Platform administration',
-              joinedAt: now.slice(0, 10),
-              createdAt: now,
-              updatedAt: now,
-              version: 1,
-            };
-        if (!existing) await this.users.create(adminAccount);
+        const adminAccount: UserAccount =
+          existing && existing.role === 'admin'
+            ? existing
+            : {
+                id: existing ? `admin-${existing.id}` : 'admin-001',
+                email,
+                name: 'Administrator',
+                role: 'admin',
+                location: 'Platform Operations',
+                phone: 'Not provided',
+                status: 'active',
+                avatar: 'AD',
+                organisation: 'KRISHI360 AI Operations',
+                specialisation: 'Platform administration',
+                joinedAt: now.slice(0, 10),
+                createdAt: now,
+                updatedAt: now,
+                version: 1,
+              };
+        if (!existing && !(await this.users.get(adminAccount.id))) {
+          await this.users.create(adminAccount);
+        }
         const token = signSessionToken({
           sub: adminAccount.id,
           role: 'admin',

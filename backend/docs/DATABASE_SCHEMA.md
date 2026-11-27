@@ -1,14 +1,16 @@
-# KRISHI360 AI — Database Schema (DynamoDB single-table design)
+# KRISHI360 AI — Database Schema (DynamoDB 2-table design)
 
 > **Status:** implemented in `src/repositories/dynamo/` and unit-tested with a mocked AWS
-> SDK. **No table has been created** — the table exists only as a design in `template.yaml`
-> until an approved deployment. Local dev uses in-memory repositories with the same interfaces.
+> SDK. Local dev uses SQLite (`krishi_users` + `krishi_flag_items`) with the same 2-table split.
 
 ## 1. Table overview
 
-One table (`KrishiTable` in `template.yaml`, name from `DYNAMODB_TABLE_NAME`):
+Two DynamoDB tables (`KrishiUsersTable` and `KrishiFlagTable` in `template.yaml`):
 
-| Property | Value |
+1. **Users Login Table** (`DYNAMODB_USERS_TABLE_NAME`, default `krishi360-users-dev`): stores **only user login details** (`id`, `email`, `role`, `status`, `passwordHash`, `createdAt`, `updatedAt`, `version`) with `pk = USER#<id>`, `sk = LOGIN`, `gsi1pk = EMAIL#<email>`, `gsi2pk = ROLE#<role>`.
+2. **Flag Data Table** (`DYNAMODB_FLAG_TABLE_NAME`, default `krishi360-flag-dev`): stores **all remaining details** — user profiles (`USER_PROFILE#<id>`), platform flags/settings (`SETTINGS#global`), workspaces, notifications, crop cases, mandi prices, schemes, farms & soil readings, storage batches/alerts/inspections, and audit entries.
+
+| Property | Value (both tables) |
 | --- | --- |
 | Primary key | `pk` (HASH, S) + `sk` (RANGE, S) |
 | GSI `gsi1` | `gsi1pk` / `gsi1sk`, projection **ALL** |

@@ -3,6 +3,7 @@ import { S3Client } from '@aws-sdk/client-s3';
 import type { AppConfig } from '../../config/env';
 import { ServiceUnavailableError } from '../../utils/errors';
 import { BedrockAnalysisService } from './bedrock';
+import { GeminiAnalysisService } from './gemini';
 import { HeuristicAnalysisService } from './heuristic';
 import { AI_ANALYSIS_DISABLED_MESSAGE, type AiAnalysisService, type AnalysisInput } from './types';
 
@@ -15,19 +16,31 @@ class DisabledAnalysisService implements AiAnalysisService {
 }
 
 /**
- * Bedrock is only constructed when explicitly enabled AND a model id and
- * region are configured (loadConfig enforces this). Otherwise the endpoint
- * fails closed with 503 AI_NOT_CONFIGURED.
+ * Selects the configured CropDoctor AI provider (Gemini, Bedrock, or local heuristic).
+ * Defaults to failing closed with 503 AI_NOT_CONFIGURED when disabled.
  */
 export function createAiService(config: AppConfig, s3?: S3Client): AiAnalysisService {
   switch (config.aiProvider) {
-    case 'bedrock':
+    case 'gemini':
+      return new GeminiAnalysisService(config.geminiModelId);
+    case 'bedrock': {
+      const bearerToken =
+        process.env.AWS_BEARER_TOKEN_BEDROCK?.trim() || process.env.AWS_BEARER_TOKEN?.trim();
       return new BedrockAnalysisService({
-        bedrock: new BedrockRuntimeClient({ region: config.awsRegion }),
+        bedrock: new BedrockRuntimeClient({
+          region: config.awsRegion,
+          ...(bearerToken
+            ? {
+                token: async () => ({ token: bearerToken }),
+                authSchemePreference: ['httpBearerAuth'],
+              }
+            : {}),
+        }),
         s3: s3 ?? new S3Client({ region: config.awsRegion }),
         bucket: config.uploadBucketName,
         modelId: config.bedrockModelId,
       });
+    }
     case 'heuristic':
       return new HeuristicAnalysisService();
     default:

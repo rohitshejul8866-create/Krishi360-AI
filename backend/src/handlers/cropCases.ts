@@ -61,7 +61,16 @@ export function buildCropDoctorRoutes(config: AppConfig, container: Container): 
         { auth: 'required', roles: ['farmer', 'admin'], params: idParam, body: analysisSchema },
         config,
         async (ctx) => {
-          const result = await svc.requestAnalysis(ctx.user!, ctx.params.id, ctx.body.imageKey, ctx.logger);
+          const result = await svc.requestAnalysis(
+            ctx.user!,
+            ctx.params.id,
+            {
+              imageKey: ctx.body.imageKey,
+              imageBase64: ctx.body.imageBase64,
+              imageMimeType: ctx.body.imageMimeType,
+            },
+            ctx.logger,
+          );
           return { data: result, simulated: result.analysis.simulated };
         },
       ),

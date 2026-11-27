@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Clock3, MessageSquareText, Settings2 } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
 import { DemoNote } from '../../components/common/DemoNote'
@@ -13,16 +13,33 @@ export function ExpertSettings() {
   const { show } = useToast()
   const [sla, setSla] = useState(settings.expertReviewSlaHours)
   const [autoAssign, setAutoAssign] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    setSla(settings.expertReviewSlaHours)
+  }, [settings.expertReviewSlaHours])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await updateSettings({ expertReviewSlaHours: sla })
+      show('Settings saved', 'Expert preferences saved to your account.', 'success')
+    } catch (err) {
+      show('Unable to save settings', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <div>
-      <PageHeader eyebrow="Account" title="Expert Settings" description="Configure demo review preferences for the expert workspace." badge={<DemoNote label="Session only" />} />
+      <PageHeader eyebrow="Account" title="Expert Settings" description="Configure review preferences for the expert workspace." badge={<DemoNote label="Saved to account" />} />
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Review preferences" description="These settings affect labels in this demo only." icon={<Settings2 size={18} />} />
+          <CardHeader title="Review preferences" description="Target review window is persisted to your account." icon={<Settings2 size={18} />} />
           <div className="space-y-5">
-            <Field label="Target review window (hours)" hint="Displayed as a demo operational target.">
+            <Field label="Target review window (hours)" hint="Displayed as an operational target.">
               <Input type="number" min="1" max="168" value={sla} onChange={(event) => setSla(Number(event.target.value))} />
             </Field>
             <label className="flex cursor-pointer items-start justify-between gap-4 rounded-2xl border border-line/70 bg-white/60 p-4">
@@ -35,7 +52,7 @@ export function ExpertSettings() {
               </div>
               <input type="checkbox" checked={autoAssign} onChange={(event) => setAutoAssign(event.target.checked)} className="mt-1 size-5 accent-[#344B35]" />
             </label>
-            <Button onClick={() => { updateSettings({ expertReviewSlaHours: sla }); show('Settings saved', 'Expert preferences updated.', 'success') }}>Save preferences</Button>
+            <Button onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save preferences'}</Button>
           </div>
         </Card>
 

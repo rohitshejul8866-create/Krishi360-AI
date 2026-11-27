@@ -54,8 +54,19 @@ export const uploadUrlSchema = z
 export const analysisSchema = z
   .object({
     imageKey: z.string().min(1).max(512).optional(),
+    imageBase64: z
+      .string()
+      .min(16)
+      .max(10_500_000)
+      .regex(/^[A-Za-z0-9+/=]+$/, 'Invalid base64 image payload.')
+      .optional(),
+    imageMimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']).optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (val) => Boolean(val.imageBase64) === Boolean(val.imageMimeType),
+    { message: 'imageBase64 and imageMimeType must be provided together.', path: ['imageMimeType'] },
+  );
 
 export const expertReviewSchema = z
   .object({
@@ -99,10 +110,16 @@ export const mandiCreateSchema = z
 
 const plotSchema = z
   .object({
+    id: trimmed(1, 128).optional(),
     name: trimmed(1, 80),
     areaHa: z.number().positive().max(10000),
     crop: trimmed(1, 80),
     growthStage: trimmed(1, 80),
+    soilMoisture: z.number().min(0).max(100).optional(),
+    lastIrrigated: trimmed(1, 64).optional(),
+    status: z.enum(['healthy', 'watch', 'attention']).optional(),
+    lat: z.number().min(-90).max(90).optional(),
+    lng: z.number().min(-180).max(180).optional(),
   })
   .strict();
 
@@ -110,10 +127,12 @@ export const farmCreateSchema = z
   .object({
     name: trimmed(1, 120),
     location: trimmed(1, 160),
-    areaHa: z.number().positive().max(100000),
+    areaHa: z.number().nonnegative().max(100000),
     soilType: trimmed(1, 80),
     irrigationType: trimmed(1, 80),
-    plots: z.array(plotSchema).min(1).max(50),
+    plots: z.array(plotSchema).max(50).default([]),
+    centerLat: z.number().min(-90).max(90).optional(),
+    centerLng: z.number().min(-180).max(180).optional(),
   })
   .strict();
 
@@ -233,9 +252,11 @@ export const farmUpdateSchema = z
   .object({
     name: trimmed(1, 120).optional(),
     location: trimmed(1, 160).optional(),
-    areaHa: z.number().positive().max(100000).optional(),
+    areaHa: z.number().nonnegative().max(100000).optional(),
     soilType: trimmed(1, 80).optional(),
     irrigationType: trimmed(1, 80).optional(),
+    centerLat: z.number().min(-90).max(90).optional(),
+    centerLng: z.number().min(-180).max(180).optional(),
     plots: z
       .array(
         z
@@ -248,10 +269,12 @@ export const farmUpdateSchema = z
             soilMoisture: z.number().min(0).max(100).optional(),
             lastIrrigated: trimmed(1, 64).optional(),
             status: z.enum(['healthy', 'watch', 'attention']).optional(),
+            lat: z.number().min(-90).max(90).optional(),
+            lng: z.number().min(-180).max(180).optional(),
           })
           .strict(),
       )
-      .min(1)
+      .min(0)
       .max(50)
       .optional(),
   })
@@ -276,10 +299,10 @@ export const schemeCreateSchema = z
 export const profileUpdateSchema = z
   .object({
     name: trimmed(2, 120).optional(),
-    location: trimmed(2, 160).optional(),
-    phone: trimmed(3, 40).optional(),
-    specialisation: trimmed(2, 120).optional(),
-    organisation: trimmed(2, 120).optional(),
+    location: z.string().trim().max(160).optional(),
+    phone: z.string().trim().max(40).optional(),
+    specialisation: z.string().trim().max(120).optional(),
+    organisation: z.string().trim().max(120).optional(),
   })
   .strict();
 
@@ -331,6 +354,16 @@ export const workspaceSaveSchema = z
       )
       .max(100)
       .optional(),
+    customCrops: z.array(trimmed(1, 80)).max(100).optional(),
+    preferences: z
+      .object({
+        language: trimmed(2, 40),
+        notificationsEnabled: z.boolean(),
+        compactTables: z.boolean(),
+        expertReviewSlaHours: z.number().int().min(1).max(168).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -340,6 +373,7 @@ export const notificationCreateSchema = z
     body: trimmed(1, 1000),
     severity: z.enum(['info', 'success', 'warning', 'critical']).default('info'),
     audience: z.enum(['farmer', 'expert', 'admin', 'all']).default('all'),
+    targetUserId: trimmed(1, 128).optional(),
   })
   .strict();
 

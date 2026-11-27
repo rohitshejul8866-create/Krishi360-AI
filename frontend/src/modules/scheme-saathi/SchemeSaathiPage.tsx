@@ -10,6 +10,7 @@ import { Field, Input } from '../../components/ui/Input'
 import { Progress } from '../../components/ui/Progress'
 import { Modal } from '../../components/ui/Modal'
 import { useApp } from '../../services/store'
+import { useAuth } from '../../context/AuthContext'
 import { useToast } from '../../context/ToastContext'
 import { schemeService } from '../../services/schemeService'
 import { SCHEME_CATEGORIES, SCHEME_STATES } from '../../data/schemes'
@@ -18,6 +19,7 @@ import type { BackendEligibilityResult } from '../../services/apiMappers'
 import type { Scheme } from '../../types'
 
 export function SchemeSaathiPage() {
+  const { user } = useAuth()
   const { schemes, savedSchemeIds, applications, saveScheme, unsaveScheme, startApplication, advanceApplication, checkSchemeEligibility } = useApp()
   const { show } = useToast()
   const [query, setQuery] = useState('')
@@ -36,25 +38,37 @@ export function SchemeSaathiPage() {
     [schemes, query, category, state],
   )
 
-  const toggleSave = (scheme: Scheme) => {
+  const toggleSave = async (scheme: Scheme) => {
     const saved = savedSchemeIds.includes(scheme.id)
-    if (saved) {
-      unsaveScheme(scheme.id)
-      show('Scheme removed', `${scheme.name} removed from saved schemes.`, 'info')
-    } else {
-      saveScheme(scheme.id)
-      show('Scheme saved', `${scheme.name} added to your saved list.`, 'success')
+    try {
+      if (saved) {
+        await unsaveScheme(scheme.id)
+        show('Scheme removed', `${scheme.name} removed from saved schemes.`, 'info')
+      } else {
+        await saveScheme(scheme.id)
+        show('Scheme saved', `${scheme.name} saved to your workspace.`, 'success')
+      }
+    } catch (err) {
+      show('Unable to update saved schemes', err instanceof Error ? err.message : 'Backend error.', 'critical')
     }
   }
 
-  const start = (scheme: Scheme) => {
-    startApplication(scheme.id, 'farmer-001')
-    show('Demo tracker started', `Track sample application steps for ${scheme.name}.`, 'success')
+  const start = async (scheme: Scheme) => {
+    try {
+      await startApplication(scheme.id, user?.id ?? '')
+      show('Tracker started', `Application tracker for ${scheme.name} saved.`, 'success')
+    } catch (err) {
+      show('Unable to start tracker', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    }
   }
 
-  const advance = (applicationId: string) => {
-    advanceApplication(applicationId)
-    show('Progress updated', 'Demo application moved to the next stage.', 'success')
+  const advance = async (applicationId: string) => {
+    try {
+      await advanceApplication(applicationId)
+      show('Progress updated', 'Application step saved to database.', 'success')
+    } catch (err) {
+      show('Unable to update tracker', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    }
   }
 
   const runEligibilityCheck = async () => {
@@ -123,7 +137,7 @@ export function SchemeSaathiPage() {
                   <span className="flex size-11 items-center justify-center rounded-2xl bg-soft-sage text-forest"><Landmark size={20} /></span>
                   <button
                     type="button"
-                    onClick={() => toggleSave(scheme)}
+                    onClick={() => void toggleSave(scheme)}
                     aria-label={saved ? 'Unsave scheme' : 'Save scheme'}
                     className={`flex size-9 items-center justify-center rounded-xl transition-colors ${saved ? 'bg-forest text-white' : 'bg-soft-sage text-forest'}`}
                   >
@@ -144,11 +158,11 @@ export function SchemeSaathiPage() {
                 <div className="mt-5 flex flex-wrap gap-2">
                   <Button size="sm" variant="outline" onClick={() => { setSelected(scheme); setEligibilityResult(null) }}>View details</Button>
                   {application ? (
-                    <Button size="sm" variant="secondary" onClick={() => advance(application.id)} disabled={application.progress >= 100}>
+                    <Button size="sm" variant="secondary" onClick={() => void advance(application.id)} disabled={application.progress >= 100}>
                       {application.progress >= 100 ? 'Demo submitted' : 'Advance step'}
                     </Button>
                   ) : (
-                    <Button size="sm" onClick={() => start(scheme)}>Start tracker</Button>
+                    <Button size="sm" onClick={() => void start(scheme)}>Start tracker</Button>
                   )}
                 </div>
               </Card>
@@ -174,7 +188,7 @@ export function SchemeSaathiPage() {
                     <p className="text-sm font-extrabold text-ink">{scheme?.name ?? app.schemeId}</p>
                     <p className="mt-1 text-[11px] text-muted">Updated {formatDate(app.updatedAt)}</p>
                     <div className="mt-4"><Progress value={app.progress} label={app.stage} /></div>
-                    <Button size="sm" variant="ghost" className="mt-3" onClick={() => advance(app.id)} disabled={app.progress >= 100}>
+                    <Button size="sm" variant="ghost" className="mt-3" onClick={() => void advance(app.id)} disabled={app.progress >= 100}>
                       {app.progress >= 100 ? 'Demo complete' : 'Advance application'}
                     </Button>
                   </div>

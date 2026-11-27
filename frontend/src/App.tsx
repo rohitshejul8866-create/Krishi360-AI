@@ -1,9 +1,11 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { AlertTriangle, X } from 'lucide-react'
 import { AppProvider } from './services/store'
 import { AuthProvider, useAuth } from './context/AuthContext'
 import { ToastProvider } from './context/ToastContext'
+import { ErrorBoundary } from './components/common/ErrorBoundary'
 import { Toaster } from './components/ui/Toaster'
 import { PageTransition } from './components/animations/PageTransition'
 import { FarmerLayout } from './layouts/FarmerLayout'
@@ -153,16 +155,64 @@ function AppRoutes() {
   )
 }
 
+function QuotaExceededBanner() {
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    const onQuotaExceeded = () => setVisible(true)
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded)
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded)
+  }, [])
+
+  if (!visible) return null
+
+  return (
+    <div
+      role="alert"
+      className="sticky top-0 z-50 border-b border-amber-300 bg-amber-50 px-4 py-2.5 text-amber-950 shadow-sm"
+    >
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-2.5">
+          <AlertTriangle size={16} className="shrink-0 text-amber-700" />
+          <p className="font-medium leading-snug">
+            The shared Google Maps Platform demo quota has reached its temporary limit or authorization restriction. Interactive map tiles may pause until quota resets.{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold underline hover:text-amber-800"
+            >
+              Learn how to attach your own Cloud API key
+            </a>
+            .
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setVisible(false)}
+          className="rounded-lg p-1 text-amber-700 hover:bg-amber-100"
+          aria-label="Dismiss map quota notice"
+        >
+          <X size={15} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function App() {
   return (
-    <BrowserRouter>
-      <ToastProvider>
-        <AppProvider>
-          <AuthProvider>
-            <AppRoutes />
-          </AuthProvider>
-        </AppProvider>
-      </ToastProvider>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <QuotaExceededBanner />
+        <ToastProvider>
+          <AppProvider>
+            <AuthProvider>
+              <AppRoutes />
+            </AuthProvider>
+          </AppProvider>
+        </ToastProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   )
 }

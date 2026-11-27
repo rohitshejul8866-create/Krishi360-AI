@@ -6,7 +6,7 @@ import type { MandiPrice } from '../models/mandi';
 import type { Scheme } from '../models/scheme';
 import type { Inspection, StorageBatch } from '../models/storage';
 import type { UserAccount } from '../models/user';
-import type { NotificationRecord, PlatformSettingsRecord } from '../models/workspace';
+import type { PlatformSettingsRecord } from '../models/workspace';
 import { nowIso } from '../utils/ids';
 import { sampleMandiPrices, sampleSchemes } from './sampleData';
 
@@ -644,40 +644,7 @@ export async function seedDemoPortalData(
     }
   }
 
-  const existingNotifs = await repos.workspace.listNotifications({ limit: 5 });
-  if (existingNotifs.items.length === 0) {
-    const seedNotifs: NotificationRecord[] = [
-      {
-        id: 'NOTIF-001',
-        title: 'Storage alert on GB-2402 (Wheat)',
-        body: 'Warehouse A Bay 4 exceeded temperature threshold (30.8°C). Check ventilation.',
-        severity: 'critical',
-        audience: 'farmer',
-        readBy: [],
-        createdAt: '2026-11-21T07:05:00.000Z',
-      },
-      {
-        id: 'NOTIF-002',
-        title: 'New crop case queued for review',
-        body: 'CASE-2402 (Wheat rust symptoms) is awaiting expert verification.',
-        severity: 'warning',
-        audience: 'expert',
-        readBy: [],
-        createdAt: '2026-11-21T15:05:00.000Z',
-      },
-      {
-        id: 'NOTIF-003',
-        title: 'Persistent database active',
-        body: 'All farm, crop, mandi, storage, scheme, and audit records are persisted in the backend database.',
-        severity: 'info',
-        audience: 'all',
-        readBy: [],
-        createdAt: '2026-11-21T06:00:00.000Z',
-      },
-    ];
-    for (const notif of seedNotifs) await repos.workspace.putNotification(notif);
-    inserted += seedNotifs.length;
-  }
+  // Notifications start empty for newly logged-in users and are populated from user actions.
 
   const existingSettings = await repos.workspace.getPlatformSettings();
   if (!existingSettings) {

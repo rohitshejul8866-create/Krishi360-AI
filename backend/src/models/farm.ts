@@ -9,6 +9,8 @@ export interface Plot {
   soilMoisture?: number;
   lastIrrigated?: string;
   status?: 'healthy' | 'watch' | 'attention';
+  lat?: number;
+  lng?: number;
 }
 
 export interface Farm {
@@ -20,6 +22,8 @@ export interface Farm {
   soilType: string;
   irrigationType: string;
   plots: Plot[];
+  centerLat?: number;
+  centerLng?: number;
   createdAt: string;
   updatedAt: string;
   version: number;

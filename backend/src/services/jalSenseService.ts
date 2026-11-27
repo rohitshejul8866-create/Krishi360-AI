@@ -13,7 +13,9 @@ export interface FarmCreateInput {
   areaHa: number;
   soilType: string;
   irrigationType: string;
-  plots: Array<Omit<Plot, 'id'>>;
+  centerLat?: number;
+  centerLng?: number;
+  plots: Array<Omit<Plot, 'id'> & { id?: string }>;
 }
 
 export interface SoilReadingInput {
@@ -116,15 +118,23 @@ export class JalSenseService {
 
   async createFarm(user: AuthUser, input: FarmCreateInput, logger: Logger): Promise<Farm> {
     const ts = nowIso();
+    const plots: Plot[] = (input.plots ?? []).map((p) => ({
+      ...p,
+      id: p.id && p.id.trim() ? p.id.trim() : makeId('PLOT'),
+    }));
+    const computedArea =
+      plots.length > 0 ? Number(plots.reduce((sum, p) => sum + p.areaHa, 0).toFixed(2)) : input.areaHa;
     const farm: Farm = {
       id: makeId('FARM'),
       farmerId: user.id,
       name: input.name,
       location: input.location,
-      areaHa: input.areaHa,
+      areaHa: computedArea,
       soilType: input.soilType,
       irrigationType: input.irrigationType,
-      plots: input.plots.map((p) => ({ ...p, id: makeId('PLOT') })),
+      ...(typeof input.centerLat === 'number' ? { centerLat: input.centerLat } : {}),
+      ...(typeof input.centerLng === 'number' ? { centerLng: input.centerLng } : {}),
+      plots,
       createdAt: ts,
       updatedAt: ts,
       version: 1,
@@ -151,6 +161,8 @@ export class JalSenseService {
       areaHa?: number;
       soilType?: string;
       irrigationType?: string;
+      centerLat?: number;
+      centerLng?: number;
       plots?: Array<{
         id?: string;
         name: string;
@@ -160,6 +172,8 @@ export class JalSenseService {
         soilMoisture?: number;
         lastIrrigated?: string;
         status?: 'healthy' | 'watch' | 'attention';
+        lat?: number;
+        lng?: number;
       }>;
     },
     logger: Logger,
@@ -175,16 +189,23 @@ export class JalSenseService {
           ...(p.soilMoisture !== undefined ? { soilMoisture: p.soilMoisture } : {}),
           ...(p.lastIrrigated ? { lastIrrigated: p.lastIrrigated } : {}),
           ...(p.status ? { status: p.status } : {}),
+          ...(typeof p.lat === 'number' ? { lat: p.lat } : {}),
+          ...(typeof p.lng === 'number' ? { lng: p.lng } : {}),
         }))
       : existing.plots;
-    const computedArea = patch.areaHa ?? Number(nextPlots.reduce((sum, p) => sum + p.areaHa, 0).toFixed(2));
+    const computedArea =
+      patch.plots !== undefined
+        ? Number(nextPlots.reduce((sum, p) => sum + p.areaHa, 0).toFixed(2))
+        : (patch.areaHa ?? existing.areaHa);
     const updated: Farm = {
       ...existing,
       ...(patch.name ? { name: patch.name } : {}),
       ...(patch.location ? { location: patch.location } : {}),
       ...(patch.soilType ? { soilType: patch.soilType } : {}),
       ...(patch.irrigationType ? { irrigationType: patch.irrigationType } : {}),
-      areaHa: computedArea > 0 ? computedArea : existing.areaHa,
+      ...(typeof patch.centerLat === 'number' ? { centerLat: patch.centerLat } : {}),
+      ...(typeof patch.centerLng === 'number' ? { centerLng: patch.centerLng } : {}),
+      areaHa: computedArea,
       plots: nextPlots,
       updatedAt: nowIso(),
       version: existing.version + 1,

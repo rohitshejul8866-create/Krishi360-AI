@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Camera, MapPin, ShieldCheck, UserRound } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
@@ -16,13 +16,28 @@ export function ProfilePage() {
   const [name, setName] = useState(user?.name ?? '')
   const [location, setLocation] = useState(user?.location ?? '')
   const [phone, setPhone] = useState(user?.phone ?? '')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!user) return
+    setName(user.name)
+    setLocation(user.location)
+    setPhone(user.phone)
+  }, [user])
 
   if (!user) return null
 
   const save = async (event: FormEvent) => {
     event.preventDefault()
-    await updateProfile({ name: name.trim() || user.name, location: location.trim(), phone: phone.trim() })
-    show('Profile updated', 'Your profile changes have been saved.', 'success')
+    setSaving(true)
+    try {
+      await updateProfile({ name: name.trim() || user.name, location: location.trim(), phone: phone.trim() })
+      show('Profile updated', 'Your profile changes have been saved to the database.', 'success')
+    } catch (err) {
+      show('Unable to save profile', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -84,7 +99,7 @@ export function ProfilePage() {
             </Field>
             <div className="flex justify-end gap-3 border-t border-line/70 pt-5">
               <Button type="button" variant="ghost" onClick={() => { setName(user.name); setLocation(user.location); setPhone(user.phone) }}>Reset</Button>
-              <Button type="submit">Save changes</Button>
+              <Button type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save changes'}</Button>
             </div>
           </form>
         </Card>

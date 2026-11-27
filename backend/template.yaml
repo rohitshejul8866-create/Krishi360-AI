@@ -53,7 +53,9 @@ Globals:
         AUTH_MODE: cognito
         DATA_BACKEND: dynamodb
         AWS_REGION: !Ref AWS::Region
-        DYNAMODB_TABLE_NAME: !Ref KrishiTable
+        DYNAMODB_USERS_TABLE_NAME: !Ref KrishiUsersTable
+        DYNAMODB_FLAG_TABLE_NAME: !Ref KrishiFlagTable
+        DYNAMODB_TABLE_NAME: !Ref KrishiFlagTable
         UPLOAD_BUCKET_NAME: !Ref UploadBucket
         ALLOWED_ORIGINS: !Ref AllowedOrigins
         AI_PROVIDER: !Ref AiProvider
@@ -165,11 +167,47 @@ Resources:
       Description: Admins — explicit administrative operations.
 
   # ---------------------------------------------------------- DynamoDB ----
-  KrishiTable:
+  # Table 1: User login details only (credentials, email/role indexes)
+  KrishiUsersTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
+      TableName: !Sub krishi360-users-${EnvironmentName}
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: pk, AttributeType: S }
+        - { AttributeName: sk, AttributeType: S }
+        - { AttributeName: gsi1pk, AttributeType: S }
+        - { AttributeName: gsi1sk, AttributeType: S }
+        - { AttributeName: gsi2pk, AttributeType: S }
+        - { AttributeName: gsi2sk, AttributeType: S }
+      KeySchema:
+        - { AttributeName: pk, KeyType: HASH }
+        - { AttributeName: sk, KeyType: RANGE }
+      GlobalSecondaryIndexes:
+        - IndexName: gsi1
+          KeySchema:
+            - { AttributeName: gsi1pk, KeyType: HASH }
+            - { AttributeName: gsi1sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+        - IndexName: gsi2
+          KeySchema:
+            - { AttributeName: gsi2pk, KeyType: HASH }
+            - { AttributeName: gsi2sk, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+
+  # Table 2: Flag & domain data table (user profiles, platform flags, cases, mandi, farms, storage, schemes, audit)
+  KrishiFlagTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub krishi360-flag-${EnvironmentName}
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
         - { AttributeName: pk, AttributeType: S }
@@ -237,8 +275,10 @@ Resources:
       CodeUri: .
       Description: GET /health (public) and GET /me.
       Policies:
-        - DynamoDBReadPolicy:
-            TableName: !Ref KrishiTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref KrishiUsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref KrishiFlagTable
       Events:
         Health:
           Type: Api
@@ -269,7 +309,7 @@ Resources:
       Description: CropDoctor AI — cases, presigned uploads, AI analysis, expert review.
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref KrishiTable
+            TableName: !Ref KrishiFlagTable
         - Version: '2012-10-17'
           Statement:
             - Effect: Allow
@@ -316,7 +356,7 @@ Resources:
       Description: MandiSmart — price reads for all roles, admin-only ingestion.
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref KrishiTable
+            TableName: !Ref KrishiFlagTable
       Events:
         ListPrices:
           Type: Api
@@ -341,7 +381,7 @@ Resources:
       Description: JalSense — farms, plots, manual soil readings, irrigation advice.
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref KrishiTable
+            TableName: !Ref KrishiFlagTable
       Events:
         CreateFarm:
           Type: Api
@@ -372,7 +412,7 @@ Resources:
       Description: GrainGuard — storage batches, readings, alerts, inspections.
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref KrishiTable
+            TableName: !Ref KrishiFlagTable
       Events:
         CreateBatch:
           Type: Api
@@ -406,7 +446,7 @@ Resources:
       Description: SchemeSaathi — scheme catalogue, eligibility check; admin audit-log reads.
       Policies:
         - DynamoDBReadPolicy:
-            TableName: !Ref KrishiTable
+            TableName: !Ref KrishiFlagTable
       Events:
         ListSchemes:
           Type: Api
@@ -429,7 +469,9 @@ Outputs:
     Value: !Ref KrishiUserPool
   UserPoolClientId:
     Value: !Ref KrishiUserPoolClient
-  TableName:
-    Value: !Ref KrishiTable
+  UsersTableName:
+    Value: !Ref KrishiUsersTable
+  FlagTableName:
+    Value: !Ref KrishiFlagTable
   UploadBucketName:
     Value: !Ref UploadBucket

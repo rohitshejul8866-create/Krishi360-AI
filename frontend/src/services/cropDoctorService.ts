@@ -1,5 +1,5 @@
 import type { AnalysisInput, AnalysisResult, CropCase } from '../types'
-import { apiClient } from './apiClient'
+import { apiClient, getAuthToken } from './apiClient'
 import {
   mapAnalysisResult,
   mapCropCase,
@@ -63,8 +63,89 @@ const DEFAULT_KNOWLEDGE = {
   ],
 }
 
+type SupportedMimeType = 'image/jpeg' | 'image/png' | 'image/webp'
+
+function readBlobAsDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+    reader.onerror = () => reject(new Error('Unable to read image file.'))
+    reader.readAsDataURL(blob)
+  })
+}
+
+function renderUrlToRasterBase64(src: string, outputType: 'image/jpeg' | 'image/png' = 'image/jpeg'): Promise<{ imageBase64: string; imageMimeType: SupportedMimeType }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      const maxDim = 1280
+      const width = img.naturalWidth || 800
+      const height = img.naturalHeight || 600
+      const scale = Math.min(1, maxDim / Math.max(width, height))
+      const targetW = Math.max(1, Math.round(width * scale))
+      const targetH = Math.max(1, Math.round(height * scale))
+      const canvas = document.createElement('canvas')
+      canvas.width = targetW
+      canvas.height = targetH
+      const ctx = canvas.getContext('2d')
+      if (!ctx) {
+        reject(new Error('Canvas context unavailable for image processing.'))
+        return
+      }
+      if (outputType === 'image/jpeg') {
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, targetW, targetH)
+      }
+      ctx.drawImage(img, 0, 0, targetW, targetH)
+      const dataUrl = canvas.toDataURL(outputType, 0.86)
+      const base64 = dataUrl.split(',')[1] ?? ''
+      if (!base64) {
+        reject(new Error('Unable to encode image for analysis.'))
+        return
+      }
+      resolve({ imageBase64: base64, imageMimeType: outputType })
+    }
+    img.onerror = () => reject(new Error('Failed to load crop image for Gemini analysis.'))
+    img.src = src
+  })
+}
+
+async function encodeImageForAnalysis(
+  file: File | null | undefined,
+  imageUrl: string,
+): Promise<{ imageBase64: string; imageMimeType: SupportedMimeType } | null> {
+  if (file) {
+    const supported: SupportedMimeType[] = ['image/jpeg', 'image/png', 'image/webp']
+    if (supported.includes(file.type as SupportedMimeType) && file.size <= 2 * 1024 * 1024) {
+      const dataUrl = await readBlobAsDataUrl(file)
+      const base64 = dataUrl.split(',')[1] ?? ''
+      if (base64) {
+        return { imageBase64: base64, imageMimeType: file.type as SupportedMimeType }
+      }
+    }
+    const objectUrl = URL.createObjectURL(file)
+    try {
+      return await renderUrlToRasterBase64(objectUrl, 'image/jpeg')
+    } finally {
+      URL.revokeObjectURL(objectUrl)
+    }
+  }
+  if (imageUrl && (imageUrl.startsWith('/') || imageUrl.startsWith('blob:'))) {
+    try {
+      return await renderUrlToRasterBase64(imageUrl, 'image/png')
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
 export const cropDoctorService = {
-  async analyzeWithBackend(input: AnalysisInput): Promise<{ cropCase: CropCase; analysis: AnalysisResult }> {
+  async analyzeWithBackend(
+    input: AnalysisInput,
+    farmerInfo?: { id: string; name: string },
+  ): Promise<{ cropCase: CropCase; analysis: AnalysisResult; persistedInBackend: boolean }> {
     const safeUrl =
       input.imageUrl &&
       (input.imageUrl.startsWith('/') ||
@@ -74,24 +155,78 @@ export const cropDoctorService = {
         ? input.imageUrl.slice(0, 500)
         : '/sample-leaf.svg'
 
-    const created = await apiClient.post<BackendCropCase>('/crop-cases', {
+    const encodedImage = await encodeImageForAnalysis(input.imageFile, safeUrl)
+
+    if (getAuthToken()) {
+      const created = await apiClient.post<BackendCropCase>('/crop-cases', {
+        crop: input.crop,
+        plantPart: input.plantPart,
+        location: input.location,
+        symptoms: input.symptoms.trim(),
+        imageUrl: safeUrl,
+        priority: input.symptoms.trim().length > 20 ? 'high' : 'medium',
+      })
+
+      const analyzed = await apiClient.post<{ case: BackendCropCase; analysis: BackendAiAnalysis }>(
+        `/crop-cases/${encodeURIComponent(created.data.id)}/analysis`,
+        encodedImage ?? {},
+      )
+
+      return {
+        cropCase: mapCropCase(analyzed.data.case),
+        analysis: mapAnalysisResult(analyzed.data.analysis),
+        persistedInBackend: true,
+      }
+    }
+
+    const res = await fetch('/api/ai/crop-analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        crop: input.crop,
+        plantPart: input.plantPart,
+        location: input.location,
+        symptoms: input.symptoms.trim(),
+        ...(encodedImage ?? {}),
+      }),
+    })
+    const json = (await res.json().catch(() => ({}))) as {
+      data?: { analysis?: BackendAiAnalysis }
+      error?: string
+    }
+    if (!res.ok || !json.data?.analysis) {
+      throw new Error(json.error || 'Gemini Vision crop analysis failed.')
+    }
+
+    const ai = json.data.analysis
+    const analysis = mapAnalysisResult(ai)
+    const cropCase: CropCase = {
+      id: makeId('CASE'),
+      farmerId: farmerInfo?.id || 'firebase-user',
+      farmerName: farmerInfo?.name || 'Farmer',
       crop: input.crop,
       plantPart: input.plantPart,
       location: input.location,
       symptoms: input.symptoms.trim(),
       imageUrl: safeUrl,
+      condition: analysis.condition,
+      confidence: analysis.confidence,
+      alternatives: analysis.alternatives,
+      observedSymptoms: analysis.observedSymptoms,
+      explanation: analysis.explanation,
+      nextSteps: analysis.nextSteps,
+      recommendExpert: analysis.recommendExpert,
+      provider: analysis.provider,
+      modelId: analysis.modelId,
+      uncertainty: analysis.uncertainty,
+      simulated: analysis.simulated,
+      status: 'ai_review',
       priority: input.symptoms.trim().length > 20 ? 'high' : 'medium',
-    })
-
-    const analyzed = await apiClient.post<{ case: BackendCropCase; analysis: BackendAiAnalysis }>(
-      `/crop-cases/${encodeURIComponent(created.data.id)}/analysis`,
-      {},
-    )
-
-    return {
-      cropCase: mapCropCase(analyzed.data.case),
-      analysis: mapAnalysisResult(analyzed.data.analysis),
+      submittedAt: new Date().toISOString(),
+      reviewStatus: 'pending',
     }
+
+    return { cropCase, analysis, persistedInBackend: false }
   },
 
   async analyze(input: AnalysisInput): Promise<AnalysisResult> {

@@ -58,16 +58,21 @@ export function MandiDataManagementPage() {
     { key: 'date', label: 'Date', render: (row) => formatDate(row.date) },
   ]
 
-  const createAlert = (alertCrop: string, alertDistrict: string, alertTarget: string) => {
+  const createAlert = async (alertCrop: string, alertDistrict: string, alertTarget: string) => {
     const parsed = Number(alertTarget)
     if (alertCrop.trim().length < 2 || alertDistrict.trim().length < 2 || !Number.isFinite(parsed) || parsed <= 0) {
       setError('Enter a crop, district and a positive target price.')
       return false
     }
-    addMandiAlert({ crop: alertCrop.trim(), district: alertDistrict.trim(), targetPrice: parsed })
-    show('Price alert created', `${alertCrop.trim()} in ${alertDistrict.trim()} at ${formatINR(parsed)}.`)
-    setError('')
-    return true
+    try {
+      await addMandiAlert({ crop: alertCrop.trim(), district: alertDistrict.trim(), targetPrice: parsed })
+      show('Price alert created', `${alertCrop.trim()} in ${alertDistrict.trim()} at ${formatINR(parsed)} saved to database.`)
+      setError('')
+      return true
+    } catch (err) {
+      show('Unable to create alert', err instanceof Error ? err.message : 'Backend error.', 'critical')
+      return false
+    }
   }
 
   const submitNewPrice = async () => {
@@ -118,8 +123,10 @@ export function MandiDataManagementPage() {
         )}
         confirm={{
           label: 'Create alert',
-          description: (row) => `Create a demo price alert for ${row.crop} in ${row.district} at the modal price of ${formatINR(row.modalPrice)}?`,
-          onConfirm: (row) => createAlert(row.crop, row.district, String(row.modalPrice)),
+          description: (row) => `Create a price alert for ${row.crop} in ${row.district} at the modal price of ${formatINR(row.modalPrice)}?`,
+          onConfirm: (row) => {
+            void createAlert(row.crop, row.district, String(row.modalPrice))
+          },
         }}
         actions={
           <div className="flex flex-wrap gap-2">
@@ -161,7 +168,7 @@ export function MandiDataManagementPage() {
             <Field label="District" required><Input value={district} onChange={(event) => setDistrict(event.target.value)} /></Field>
             <Field label="Target (₹/quintal)" required error={error}><Input type="number" min="1" value={target} onChange={(event) => setTarget(event.target.value)} /></Field>
           </div>
-          <Button onClick={() => createAlert(crop, district, target)}>Add alert</Button>
+          <Button onClick={() => void createAlert(crop, district, target)}>Add alert</Button>
           <div className="space-y-2">
             {mandiAlerts.length === 0 ? (
               <p className="rounded-2xl border border-dashed border-line bg-white/50 px-4 py-6 text-center text-sm text-muted">No alerts created yet.</p>
@@ -171,7 +178,17 @@ export function MandiDataManagementPage() {
                   <p className="text-sm font-bold text-ink">{alert.crop} · {alert.district}</p>
                   <p className="text-xs text-muted">Target {formatINR(alert.targetPrice)} · {formatDate(alert.createdAt)}</p>
                 </div>
-                <Button size="sm" variant="ghost" onClick={() => { removeMandiAlert(alert.id); show('Alert removed', `${alert.crop} alert deleted from the demo.`) }}>Remove</Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    void removeMandiAlert(alert.id)
+                      .then(() => show('Alert removed', `${alert.crop} alert deleted from database.`))
+                      .catch((err) => show('Unable to remove alert', err instanceof Error ? err.message : 'Backend error.', 'critical'))
+                  }}
+                >
+                  Remove
+                </Button>
               </div>
             ))}
           </div>

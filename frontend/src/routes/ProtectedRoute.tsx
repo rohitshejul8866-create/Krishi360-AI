@@ -16,8 +16,15 @@ const loginFor: Record<Role, string> = {
 }
 
 export function ProtectedRoute({ children, allowedRole }: { children: ReactNode; allowedRole: Role }) {
-  const { user } = useAuth()
+  const { user, restoring } = useAuth()
 
+  if (restoring) {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-sm font-semibold text-muted">
+        Restoring your workspace…
+      </div>
+    )
+  }
   if (!user) return <Navigate to={loginFor[allowedRole]} replace />
   if (user.role !== allowedRole) return <Navigate to={homeFor[user.role]} replace />
   return <>{children}</>

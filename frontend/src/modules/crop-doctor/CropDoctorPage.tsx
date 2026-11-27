@@ -15,7 +15,6 @@ import {
   X,
 } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
-import { DemoNote } from '../../components/common/DemoNote'
 import { Card, CardHeader } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -37,23 +36,25 @@ type Step = 'form' | 'analyzing' | 'result'
 export function CropDoctorPage() {
   const fileRef = useRef<HTMLInputElement>(null)
   const [tab, setTab] = useState('new')
+  const { show } = useToast()
+  const { user } = useAuth()
+  const { cases, addCase, saveCropCase, notify, farms } = useApp()
+
   const [step, setStep] = useState<Step>('form')
   const [imageUrl, setImageUrl] = useState('')
   const [imageName, setImageName] = useState('')
+  const [imageFile, setImageFile] = useState<File | null>(null)
   const [crop, setCrop] = useState(CROP_NAMES[0])
   const [plantPart, setPlantPart] = useState(PLANT_PARTS[0])
-  const [location, setLocation] = useState('Nashik, Maharashtra')
+  const [location, setLocation] = useState(farms[0]?.location ?? user?.location ?? '')
   const [symptoms, setSymptoms] = useState('')
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const [latestCase, setLatestCase] = useState<CropCase | null>(null)
   const [selectedCase, setSelectedCase] = useState<CropCase | null>(null)
   const [error, setError] = useState('')
   const [dragging, setDragging] = useState(false)
-  const { show } = useToast()
-  const { user } = useAuth()
-  const { cases, addCase, notify } = useApp()
 
-  const farmerCases = cases.filter((item) => item.farmerId === (user?.id ?? 'farmer-001') || item.farmerName === user?.name)
+  const farmerCases = cases.filter((item) => Boolean(user?.id) && item.farmerId === user?.id)
 
   const loadFile = (file?: File) => {
     if (!file) return
@@ -62,10 +63,11 @@ export function CropDoctorPage() {
       return
     }
     if (file.size > 8 * 1024 * 1024) {
-      setError('Image must be smaller than 8 MB in this demo.')
+      setError('Image must be smaller than 8 MB.')
       return
     }
     setError('')
+    setImageFile(file)
     setImageUrl(URL.createObjectURL(file))
     setImageName(file.name)
   }
@@ -79,18 +81,20 @@ export function CropDoctorPage() {
   }
 
   const useSample = () => {
+    setImageFile(null)
     setImageUrl('/sample-leaf.svg')
     setImageName('sample-leaf.svg')
     setError('')
     setSymptoms('Dark circular spots with a yellow halo on older leaves.')
     setCrop('Tomato')
-    show('Sample image loaded', 'You can now run a demo analysis.', 'info')
+    show('Sample image loaded', 'Ready to analyze with Gemini Vision AI.', 'info')
   }
 
   const reset = () => {
     setStep('form')
     setResult(null)
     setLatestCase(null)
+    setImageFile(null)
     setImageUrl('')
     setImageName('')
     setSymptoms('')
@@ -104,20 +108,36 @@ export function CropDoctorPage() {
     }
     setError('')
     setStep('analyzing')
-    const input = { crop, plantPart, location, symptoms, imageUrl, imageName: imageName || 'uploaded-image' }
+    const input = {
+      crop,
+      plantPart,
+      location: location.trim() || farms[0]?.location || user?.location || 'India',
+      symptoms,
+      imageUrl,
+      imageName: imageName || 'uploaded-image',
+      imageFile,
+    }
     try {
-      const { cropCase, analysis } = await cropDoctorService.analyzeWithBackend(input)
-      addCase(cropCase)
+      const { cropCase, analysis, persistedInBackend } = await cropDoctorService.analyzeWithBackend(
+        input,
+        user ? { id: user.id, name: user.name } : undefined,
+      )
+      let savedCase = cropCase
+      if (persistedInBackend) {
+        addCase(cropCase)
+      } else {
+        savedCase = await saveCropCase(cropCase)
+      }
       notify({
         title: 'Crop case submitted',
-        body: `${cropCase.id} was saved and added to the expert review queue.`,
+        body: `${savedCase.id} was analyzed and added to the expert review queue.`,
         severity: 'info',
         audience: 'expert',
       })
       setResult(analysis)
-      setLatestCase(cropCase)
+      setLatestCase(savedCase)
       setStep('result')
-      show('Analysis complete', `${cropCase.id} saved via backend API.`, 'success')
+      show('Gemini analysis complete', `${savedCase.id} saved to your account database.`, 'success')
     } catch (err) {
       setStep('form')
       const message = err instanceof Error ? err.message : 'Unable to submit case to backend.'
@@ -131,8 +151,8 @@ export function CropDoctorPage() {
       <PageHeader
         eyebrow="Module 01 · Crop health"
         title="CropDoctor AI"
-        description="Explore possible crop conditions from an image and symptoms, with safe plain-language next steps."
-        badge={<DemoNote label="Simulated AI analysis" />}
+        description="Analyze crop images and field symptoms using Gemini Vision AI with safe, plain-language next steps."
+        badge={<Badge tone="forest"><Sparkles size={12} /> Gemini Vision AI</Badge>}
         actions={<Button variant="outline" onClick={() => setTab('history')}><ScanSearch size={15} /> Case history</Button>}
       />
 
@@ -149,9 +169,9 @@ export function CropDoctorPage() {
       {tab === 'new' ? (
         step === 'analyzing' ? (
           <Card className="mx-auto max-w-3xl py-12">
-            <LoadingBlock label="Comparing sample visual patterns…" />
+            <LoadingBlock label="Analyzing crop image with Gemini AI…" />
             <div className="mt-8 grid gap-3 sm:grid-cols-3">
-              {['Reading crop context', 'Comparing reference patterns', 'Preparing plain-language guidance'].map((item, index) => (
+              {['Reading crop & symptom context', 'Inspecting image with Gemini Vision', 'Preparing safe non-chemical guidance'].map((item, index) => (
                 <div key={item} className="flex items-center gap-2 rounded-2xl bg-soft-sage/45 px-3 py-3 text-xs font-semibold text-forest">
                   <Loader2 size={14} className="animate-spin" style={{ animationDelay: `${index * 150}ms` }} />
                   {item}
@@ -165,8 +185,14 @@ export function CropDoctorPage() {
               <div className="flex items-start gap-3">
                 <Info size={18} className="mt-0.5 shrink-0 text-alert" />
                 <div>
-                  <p className="text-sm font-extrabold text-alert">Demo AI analysis — not a verified agricultural diagnosis.</p>
-                  <p className="mt-1 text-xs text-ink/70">Do not apply any chemical treatment based on this result alone. Confirm with a qualified local expert.</p>
+                  <p className="text-sm font-extrabold text-alert">
+                    {result.simulated
+                      ? 'Simulated AI analysis — not a verified agricultural diagnosis.'
+                      : 'Gemini AI suggestion — not a verified agricultural diagnosis.'}
+                  </p>
+                  <p className="mt-1 text-xs text-ink/70">
+                    {result.disclaimer || 'Do not apply any chemical treatment based on this result alone. Confirm with a qualified local expert.'}
+                  </p>
                 </div>
               </div>
               <Button variant="outline" size="sm" onClick={reset}>New analysis</Button>
@@ -176,7 +202,15 @@ export function CropDoctorPage() {
               <Card>
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <Badge tone="sage">{latestCase.id}</Badge>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone="sage">{latestCase.id}</Badge>
+                      {result.provider ? (
+                        <Badge tone={result.provider === 'gemini' ? 'forest' : 'neutral'}>
+                          {result.provider === 'gemini' ? 'Gemini AI' : result.provider}
+                          {result.modelId ? ` · ${result.modelId}` : ''}
+                        </Badge>
+                      ) : null}
+                    </div>
                     <h2 className="mt-4 text-2xl font-extrabold tracking-tight text-ink">{result.condition}</h2>
                     <p className="mt-2 text-sm text-muted">{latestCase.crop} · {latestCase.plantPart} · {latestCase.location}</p>
                   </div>
@@ -185,11 +219,21 @@ export function CropDoctorPage() {
                 <div className="mt-7 grid gap-5 sm:grid-cols-[180px_1fr] sm:items-center">
                   <div className="rounded-2xl bg-soft-sage/50 p-5 text-center">
                     <p className="text-4xl font-extrabold tracking-tight text-forest">{result.confidence}%</p>
-                    <p className="mt-1 text-[11px] font-bold text-muted">Demo confidence</p>
+                    <p className="mt-1 text-[11px] font-bold text-muted">
+                      {result.simulated ? 'Demo confidence' : 'AI confidence'}
+                    </p>
                   </div>
                   <div>
-                    <Progress value={result.confidence} label="Pattern similarity (simulated)" />
+                    <Progress
+                      value={result.confidence}
+                      label={result.simulated ? 'Pattern similarity (simulated)' : 'Diagnostic confidence'}
+                    />
                     <p className="mt-3 text-xs leading-relaxed text-muted">{result.explanation}</p>
+                    {result.uncertainty ? (
+                      <p className="mt-2 rounded-xl bg-soft-sage/40 px-3 py-2 text-[11px] text-ink/80">
+                        <strong className="text-forest">Uncertainty note:</strong> {result.uncertainty}
+                      </p>
+                    ) : null}
                   </div>
                 </div>
 
@@ -253,13 +297,13 @@ export function CropDoctorPage() {
                   {imageUrl ? (
                     <div className="relative mx-auto max-w-md">
                       <img src={imageUrl} alt="Crop image preview" className="aspect-[4/3] w-full rounded-2xl border border-line object-cover" />
-                      <button type="button" onClick={() => { setImageUrl(''); setImageName('') }} className="absolute top-2 right-2 flex size-8 items-center justify-center rounded-full bg-white/90 text-alert" aria-label="Remove image"><Trash2 size={15} /></button>
+                      <button type="button" onClick={() => { setImageFile(null); setImageUrl(''); setImageName('') }} className="absolute top-2 right-2 flex size-8 items-center justify-center rounded-full bg-white/90 text-alert" aria-label="Remove image"><Trash2 size={15} /></button>
                     </div>
                   ) : (
                     <>
                       <span className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-white text-forest"><ImagePlus size={22} /></span>
                       <p className="mt-4 text-sm font-extrabold text-ink">Drag and drop a crop image</p>
-                      <p className="mt-1 text-xs text-muted">PNG or JPG up to 8 MB · Stays in your browser</p>
+                      <p className="mt-1 text-xs text-muted">PNG, JPG or WebP up to 8 MB · Analyzed securely on the server</p>
                       <div className="mt-4 flex flex-wrap justify-center gap-2">
                         <Button type="button" variant="outline" size="sm" onClick={() => fileRef.current?.click()}>Browse image</Button>
                         <Button type="button" variant="secondary" size="sm" onClick={useSample}>Use sample image</Button>
@@ -279,23 +323,23 @@ export function CropDoctorPage() {
                 <Field label="Location" required>
                   <Input value={location} onChange={(event) => setLocation(event.target.value)} placeholder="District, State" />
                 </Field>
-                <Field label="Optional symptoms" hint="Describe what you see for a more contextual demo result.">
+                <Field label="Optional symptoms" hint="Describe spots, wilting, or discoloration to improve Gemini analysis.">
                   <Textarea value={symptoms} onChange={(event) => setSymptoms(event.target.value)} placeholder="e.g. Brown spots with yellow edges on older leaves" />
                 </Field>
                 {error ? <p className="rounded-2xl bg-[#FBE7E3] px-4 py-3 text-xs font-semibold text-alert">{error}</p> : null}
-                <Button type="submit" size="lg" className="w-full"><Sparkles size={17} /> Run demo analysis</Button>
+                <Button type="submit" size="lg" className="w-full"><Sparkles size={17} /> Analyze with Gemini AI</Button>
               </form>
             </Card>
 
             <div className="space-y-5">
               <Card className="bg-forest text-white">
-                <p className="text-[11px] font-extrabold tracking-[0.14em] text-sage uppercase">How this demo works</p>
-                <h2 className="mt-3 text-2xl font-extrabold tracking-tight">Structured observation, honest output.</h2>
+                <p className="text-[11px] font-extrabold tracking-[0.14em] text-sage uppercase">Gemini Vision workflow</p>
+                <h2 className="mt-3 text-2xl font-extrabold tracking-tight">Multimodal crop observation, safe guidance.</h2>
                 <div className="mt-6 space-y-4">
                   {[
-                    { icon: ImagePlus, text: 'Add a clear image and crop context.' },
-                    { icon: Sparkles, text: 'Compare against broad sample patterns.' },
-                    { icon: CheckCircle2, text: 'Receive labelled possibilities and safe steps.' },
+                    { icon: ImagePlus, text: 'Upload a clear crop photo and field context.' },
+                    { icon: Sparkles, text: 'Gemini Vision inspects symptoms and differentials.' },
+                    { icon: CheckCircle2, text: 'Receive safe next steps and expert review queuing.' },
                   ].map((item) => {
                     const Icon = item.icon
                     return <div key={item.text} className="flex items-center gap-3 text-sm text-white/80"><Icon size={16} className="text-sage" />{item.text}</div>
@@ -303,12 +347,12 @@ export function CropDoctorPage() {
                 </div>
               </Card>
               <Card>
-                <CardHeader title="Before you begin" description="Important boundaries for this module." icon={<Info size={18} />} />
+                <CardHeader title="Before you begin" description="Important boundaries for AI crop screening." icon={<Info size={18} />} />
                 <ul className="space-y-3 text-xs leading-relaxed text-muted">
-                  <li>• Case submissions and pattern analysis run on the connected backend API.</li>
-                  <li>• Confidence values are illustrative pattern-similarity numbers.</li>
+                  <li>• Image and symptom analysis run server-side via Gemini AI.</li>
+                  <li>• AI output is advisory triage, not a confirmed field diagnosis.</li>
                   <li>• No pesticide names, dosages or chemical instructions are provided.</li>
-                  <li>• Cases are synced with the expert portal for review.</li>
+                  <li>• Cases are saved and queued in the expert portal for verification.</li>
                 </ul>
               </Card>
             </div>
@@ -316,7 +360,7 @@ export function CropDoctorPage() {
         )
       ) : (
         <Card>
-          <CardHeader title="Crop case history" description="Cases submitted in this demo session." icon={<ScanSearch size={18} />} />
+          <CardHeader title="Crop case history" description="Cases saved to your account." icon={<ScanSearch size={18} />} />
           <div className="space-y-3">
             {farmerCases.map((item) => (
               <button key={item.id} type="button" onClick={() => setSelectedCase(item)} className="flex w-full flex-wrap items-center justify-between gap-3 rounded-2xl border border-line/70 bg-white/60 p-4 text-left transition-colors hover:border-sage">

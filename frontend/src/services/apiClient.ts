@@ -14,6 +14,7 @@ export interface DevAuthOverride {
   id: string
   role: string
   name?: string
+  provider?: 'express' | 'firebase'
 }
 
 export const apiClient = {

@@ -15,7 +15,7 @@ export interface CaseAlternative {
  * of this payload.
  */
 export interface AiAnalysis {
-  provider: 'bedrock' | 'heuristic';
+  provider: 'gemini' | 'bedrock' | 'heuristic';
   modelId?: string;
   condition: string;
   confidence: number;

@@ -8,6 +8,7 @@ export interface NotificationRecord {
   body: string;
   severity: NotificationSeverity;
   audience: Role | 'all';
+  targetUserId?: string;
   readBy: string[];
   createdAt: string;
 }
@@ -39,12 +40,21 @@ export interface IrrigationScheduleRecord {
   reminder: boolean;
 }
 
+export interface UserPreferencesRecord {
+  language: string;
+  notificationsEnabled: boolean;
+  compactTables: boolean;
+  expertReviewSlaHours?: number;
+}
+
 export interface UserWorkspaceState {
   userId: string;
   savedSchemeIds: string[];
   applications: SchemeApplicationRecord[];
   mandiAlerts: MandiAlertRecord[];
   irrigationSchedules: IrrigationScheduleRecord[];
+  customCrops?: string[];
+  preferences?: UserPreferencesRecord;
   updatedAt: string;
   version: number;
 }

@@ -63,6 +63,8 @@ export function PlatformSettingsPage() {
           : 'Preferences updated in local store.',
         'success',
       )
+    } catch (err) {
+      show('Unable to save settings', err instanceof Error ? err.message : 'Backend error.', 'critical')
     } finally {
       setSaving(false)
     }

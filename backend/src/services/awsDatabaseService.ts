@@ -47,6 +47,8 @@ export interface BackendStatusSnapshot {
   service: string;
   dataBackend: AppConfig['dataBackend'];
   awsRegion: string;
+  usersTableName: string;
+  flagTableName: string;
   tableName: string;
   customEndpointConfigured: boolean;
   awsCredentialsConfigured: boolean;
@@ -54,9 +56,12 @@ export interface BackendStatusSnapshot {
   aiProvider: AppConfig['aiProvider'];
   authMode: AppConfig['authMode'];
   dynamo: DynamoTableInspection;
+  usersDynamo: DynamoTableInspection;
+  flagDynamo: DynamoTableInspection;
   sqlite?: SqliteInspection;
   counts: Record<BackendEntityName, number>;
   singleTableSchema: Array<{
+    table: 'Users Login Table' | 'Flag Data Table';
     entity: string;
     pkPattern: string;
     skPattern: string;
@@ -69,18 +74,19 @@ export interface BackendStatusSnapshot {
 }
 
 const SINGLE_TABLE_SCHEMA: BackendStatusSnapshot['singleTableSchema'] = [
-  { entity: 'UserAccount', pkPattern: 'USER#<id>', skPattern: 'META', gsi1: 'EMAIL#<email>', gsi2: 'ROLE#<role>' },
-  { entity: 'UserWorkspace', pkPattern: 'WORKSPACE#<userId>', skPattern: 'META', gsi1: '—', gsi2: '—' },
-  { entity: 'Notification', pkPattern: 'NOTIF#<id>', skPattern: 'META', gsi1: 'NOTIF_FEED', gsi2: '<createdAt>' },
-  { entity: 'PlatformSettings', pkPattern: 'SETTINGS#GLOBAL', skPattern: 'META', gsi1: '—', gsi2: '—' },
-  { entity: 'CropCase', pkPattern: 'CASE#<id>', skPattern: 'META', gsi1: 'FARMER#<farmerId>', gsi2: 'EXPERTQUEUE' },
-  { entity: 'MandiPrice', pkPattern: 'PRICE#<id>', skPattern: 'META', gsi1: 'CROP#<crop>', gsi2: 'STATE#<state>' },
-  { entity: 'Scheme', pkPattern: 'SCHEME#<id>', skPattern: 'META', gsi1: 'CATEGORY#<cat>', gsi2: '—' },
-  { entity: 'Farm & Plots', pkPattern: 'FARM#<id>', skPattern: 'META', gsi1: 'FARMER#<farmerId>', gsi2: '—' },
-  { entity: 'SoilReading', pkPattern: 'FARM#<farmId>', skPattern: 'READING#<ts>#<id>', gsi1: '—', gsi2: '—' },
-  { entity: 'StorageBatch', pkPattern: 'BATCH#<id>', skPattern: 'META', gsi1: 'FARMER#<ownerId>', gsi2: '—' },
-  { entity: 'StorageReading / Alert', pkPattern: 'BATCH#<batchId>', skPattern: 'READING# | ALERT# | INSPECTION#', gsi1: '—', gsi2: '—' },
-  { entity: 'AuditEntry', pkPattern: 'AUDIT#<YYYY-MM-DD>', skPattern: '<ts>#<id>', gsi1: 'ACTOR#<actorId>', gsi2: '—' },
+  { table: 'Users Login Table', entity: 'UserLogin (Credentials)', pkPattern: 'USER#<id>', skPattern: 'LOGIN', gsi1: 'EMAIL#<email>', gsi2: 'ROLE#<role>' },
+  { table: 'Flag Data Table', entity: 'UserProfile (Details)', pkPattern: 'USER_PROFILE#<id>', skPattern: 'META', gsi1: 'PROFILE#<id>', gsi2: '—' },
+  { table: 'Flag Data Table', entity: 'UserWorkspace', pkPattern: 'WORKSPACE#<userId>', skPattern: 'META', gsi1: '—', gsi2: '—' },
+  { table: 'Flag Data Table', entity: 'Notification', pkPattern: 'NOTIF#<id>', skPattern: 'META', gsi1: 'NOTIF_FEED', gsi2: '<createdAt>' },
+  { table: 'Flag Data Table', entity: 'PlatformSettings (Flags)', pkPattern: 'SETTINGS#global', skPattern: 'META', gsi1: '—', gsi2: '—' },
+  { table: 'Flag Data Table', entity: 'CropCase', pkPattern: 'CASE#<id>', skPattern: 'META', gsi1: 'FARMER#<farmerId>', gsi2: 'EXPERTQUEUE' },
+  { table: 'Flag Data Table', entity: 'MandiPrice', pkPattern: 'PRICE#<id>', skPattern: 'META', gsi1: 'CROP#<crop>', gsi2: 'STATE#<state>' },
+  { table: 'Flag Data Table', entity: 'Scheme', pkPattern: 'SCHEME#<id>', skPattern: 'META', gsi1: 'CATEGORY#<cat>', gsi2: '—' },
+  { table: 'Flag Data Table', entity: 'Farm & Plots', pkPattern: 'FARM#<id>', skPattern: 'META', gsi1: 'FARMER#<farmerId>', gsi2: '—' },
+  { table: 'Flag Data Table', entity: 'SoilReading', pkPattern: 'FARM#<farmId>', skPattern: 'READING#<ts>#<id>', gsi1: '—', gsi2: '—' },
+  { table: 'Flag Data Table', entity: 'StorageBatch', pkPattern: 'BATCH#<id>', skPattern: 'META', gsi1: 'FARMER#<ownerId>', gsi2: '—' },
+  { table: 'Flag Data Table', entity: 'StorageReading / Alert', pkPattern: 'BATCH#<batchId>', skPattern: 'READING# | ALERT# | INSPECTION#', gsi1: '—', gsi2: '—' },
+  { table: 'Flag Data Table', entity: 'AuditEntry', pkPattern: 'AUDIT#<YYYY-MM-DD>', skPattern: '<ts>#<id>', gsi1: 'ACTOR#<actorId>', gsi2: '—' },
 ];
 
 const API_ENDPOINTS: BackendEndpointInfo[] = [
@@ -121,7 +127,10 @@ function sanitizeAwsFailure(err: unknown): string {
   return `DynamoDB check returned ${name}.`;
 }
 
-export async function inspectDynamoTable(config: AppConfig): Promise<DynamoTableInspection> {
+export async function inspectDynamoTable(
+  config: AppConfig,
+  targetTableName: string = config.flagTableName,
+): Promise<DynamoTableInspection> {
   if (!config.awsCredentialsConfigured) {
     return {
       reachable: false,
@@ -133,14 +142,14 @@ export async function inspectDynamoTable(config: AppConfig): Promise<DynamoTable
         config.dataBackend === 'dynamodb'
           ? 'DATA_BACKEND=dynamodb is enabled, but AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY are not set.'
           : config.dataBackend === 'sqlite'
-            ? 'Running on persistent local SQLite single-table database (WAL mode). Set AWS credentials and DATA_BACKEND=dynamodb to switch to AWS DynamoDB.'
+            ? `Running on persistent local SQLite 2-table database (krishi_users + krishi_flag_items). Set AWS credentials and DATA_BACKEND=dynamodb to switch to AWS DynamoDB (${config.usersTableName} & ${config.flagTableName}).`
             : 'Running on local in-memory store. Set DATA_BACKEND=sqlite for local persistence or AWS credentials + DATA_BACKEND=dynamodb for AWS.',
     };
   }
 
   try {
     const client = getBaseDynamoClient(config);
-    const res = await client.send(new DescribeTableCommand({ TableName: config.tableName }));
+    const res = await client.send(new DescribeTableCommand({ TableName: targetTableName }));
     const table = res.Table;
     const rawStatus = table?.TableStatus;
     const tableStatus: TableState =
@@ -157,7 +166,7 @@ export async function inspectDynamoTable(config: AppConfig): Promise<DynamoTable
       billingMode: table?.BillingModeSummary?.BillingMode ?? 'PAY_PER_REQUEST',
       approximateItemCount: table?.ItemCount ?? 0,
       gsiNames: (table?.GlobalSecondaryIndexes ?? []).map((g) => g.IndexName ?? '').filter(Boolean),
-      message: `Connected to DynamoDB table "${config.tableName}" (${tableStatus}) in ${config.awsRegion}.`,
+      message: `Connected to DynamoDB table "${targetTableName}" (${tableStatus}) in ${config.awsRegion}.`,
     };
   } catch (err) {
     if (err instanceof ResourceNotFoundException) {
@@ -167,7 +176,7 @@ export async function inspectDynamoTable(config: AppConfig): Promise<DynamoTable
         billingMode: null,
         approximateItemCount: null,
         gsiNames: [],
-        message: `AWS credentials reachable in ${config.awsRegion}, but table "${config.tableName}" does not exist yet.`,
+        message: `AWS credentials reachable in ${config.awsRegion}, but table "${targetTableName}" does not exist yet.`,
       };
     }
     return {
@@ -181,14 +190,11 @@ export async function inspectDynamoTable(config: AppConfig): Promise<DynamoTable
   }
 }
 
-export async function ensureDynamoTable(config: AppConfig): Promise<DynamoTableInspection> {
-  if (!config.awsCredentialsConfigured) {
-    throw new ValidationError(
-      'AWS credentials are not configured in server environment Secrets (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).',
-    );
-  }
-
-  const current = await inspectDynamoTable(config);
+async function ensureSingleDynamoTable(
+  config: AppConfig,
+  targetTableName: string,
+): Promise<DynamoTableInspection> {
+  const current = await inspectDynamoTable(config, targetTableName);
   if (current.tableStatus === 'ACTIVE') return current;
 
   const client = getBaseDynamoClient(config);
@@ -196,7 +202,7 @@ export async function ensureDynamoTable(config: AppConfig): Promise<DynamoTableI
     try {
       await client.send(
         new CreateTableCommand({
-          TableName: config.tableName,
+          TableName: targetTableName,
           BillingMode: 'PAY_PER_REQUEST',
           AttributeDefinitions: [
             { AttributeName: 'pk', AttributeType: 'S' },
@@ -232,7 +238,7 @@ export async function ensureDynamoTable(config: AppConfig): Promise<DynamoTableI
       );
       await waitUntilTableExists(
         { client, maxWaitTime: 20, minDelay: 1, maxDelay: 3 },
-        { TableName: config.tableName },
+        { TableName: targetTableName },
       );
     } catch (err) {
       throw new ServiceUnavailableError('DYNAMODB_PROVISION_FAILED', sanitizeAwsFailure(err));
@@ -241,7 +247,25 @@ export async function ensureDynamoTable(config: AppConfig): Promise<DynamoTableI
     throw new ServiceUnavailableError('DYNAMODB_UNREACHABLE', current.message);
   }
 
-  return inspectDynamoTable(config);
+  return inspectDynamoTable(config, targetTableName);
+}
+
+export async function ensureDynamoTable(config: AppConfig): Promise<DynamoTableInspection> {
+  if (!config.awsCredentialsConfigured) {
+    throw new ValidationError(
+      'AWS credentials are not configured in server environment Secrets (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY).',
+    );
+  }
+
+  const [usersDynamo, flagDynamo] = await Promise.all([
+    ensureSingleDynamoTable(config, config.usersTableName),
+    ensureSingleDynamoTable(config, config.flagTableName),
+  ]);
+
+  return {
+    ...flagDynamo,
+    message: `Verified 2 DynamoDB tables: "${config.usersTableName}" (${usersDynamo.tableStatus}) & "${config.flagTableName}" (${flagDynamo.tableStatus}) in ${config.awsRegion}.`,
+  };
 }
 
 async function countAllEntities(repos: Repositories): Promise<Record<BackendEntityName, number>> {
@@ -273,23 +297,41 @@ export async function getBackendStatus(
   container: Container,
   runIntegrity = false,
 ): Promise<BackendStatusSnapshot> {
-  const [dynamo, counts] = await Promise.all([
-    inspectDynamoTable(config),
+  const [usersDynamo, flagDynamo, counts] = await Promise.all([
+    inspectDynamoTable(config, config.usersTableName),
+    inspectDynamoTable(config, config.flagTableName),
     countAllEntities(container.repos),
   ]);
   const sqlite = config.dataBackend === 'sqlite' ? inspectSqliteDatabase(config, runIntegrity) : undefined;
+  const dynamo: DynamoTableInspection = config.awsCredentialsConfigured
+    ? {
+        ...flagDynamo,
+        reachable: usersDynamo.reachable && flagDynamo.reachable,
+        tableStatus:
+          usersDynamo.tableStatus === 'ACTIVE' && flagDynamo.tableStatus === 'ACTIVE'
+            ? 'ACTIVE'
+            : usersDynamo.tableStatus === 'NOT_FOUND' || flagDynamo.tableStatus === 'NOT_FOUND'
+              ? 'NOT_FOUND'
+              : flagDynamo.tableStatus,
+        message: `Users Table "${config.usersTableName}": ${usersDynamo.tableStatus} | Flag Table "${config.flagTableName}": ${flagDynamo.tableStatus}`,
+      }
+    : flagDynamo;
 
   return {
     service: 'krishi360-ai-backend',
     dataBackend: config.dataBackend,
     awsRegion: config.awsRegion,
-    tableName: config.tableName,
+    usersTableName: config.usersTableName,
+    flagTableName: config.flagTableName,
+    tableName: config.flagTableName,
     customEndpointConfigured: Boolean(config.dynamoEndpoint),
     awsCredentialsConfigured: config.awsCredentialsConfigured,
     s3UploadsConfigured: Boolean(config.uploadBucketName),
     aiProvider: config.aiProvider,
     authMode: config.authMode,
     dynamo,
+    usersDynamo,
+    flagDynamo,
     ...(sqlite ? { sqlite } : {}),
     counts,
     singleTableSchema: SINGLE_TABLE_SCHEMA,
@@ -360,7 +402,9 @@ export async function exportSanitizedDatabase(
   return {
     exportedAt: new Date().toISOString(),
     dataBackend: config.dataBackend,
-    tableName: config.tableName,
+    usersTableName: config.usersTableName,
+    flagTableName: config.flagTableName,
+    tableName: config.flagTableName,
     collections: {
       users: users.items.map(toPublicUser),
       cropCases: cases.items,

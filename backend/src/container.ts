@@ -108,16 +108,17 @@ export function buildRepositories(config: AppConfig): Repositories {
     };
   }
   const client = getDocClient(config);
-  const table = config.tableName;
+  const usersTable = config.usersTableName;
+  const flagTable = config.flagTableName;
   return {
-    cases: new DynamoCropCaseRepository(client, table),
-    mandi: new DynamoMandiRepository(client, table),
-    farms: new DynamoFarmRepository(client, table),
-    storage: new DynamoStorageRepository(client, table),
-    schemes: new DynamoSchemeRepository(client, table),
-    audit: new DynamoAuditRepository(client, table),
-    users: new DynamoUserRepository(client, table),
-    workspace: new DynamoWorkspaceRepository(client, table),
+    cases: new DynamoCropCaseRepository(client, flagTable),
+    mandi: new DynamoMandiRepository(client, flagTable),
+    farms: new DynamoFarmRepository(client, flagTable),
+    storage: new DynamoStorageRepository(client, flagTable),
+    schemes: new DynamoSchemeRepository(client, flagTable),
+    audit: new DynamoAuditRepository(client, flagTable),
+    users: new DynamoUserRepository(client, usersTable, flagTable),
+    workspace: new DynamoWorkspaceRepository(client, flagTable),
   };
 }
 

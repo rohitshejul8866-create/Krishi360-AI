@@ -58,10 +58,18 @@ export function buildBackendRoutes(config: AppConfig, container: Container): Rou
       resource: '/backend/ensure-table',
       handler: withHttp({ auth: 'required', roles: ['admin'] }, config, async (ctx) => {
         const dynamo = await ensureDynamoTable(config);
-        await container.audit.record(ctx.logger, ctx.user!, 'backend.dynamodb_table_verified', config.tableName, {
-          tableStatus: dynamo.tableStatus,
-          awsRegion: config.awsRegion,
-        });
+        await container.audit.record(
+          ctx.logger,
+          ctx.user!,
+          'backend.dynamodb_table_verified',
+          `${config.usersTableName},${config.flagTableName}`,
+          {
+            usersTableName: config.usersTableName,
+            flagTableName: config.flagTableName,
+            tableStatus: dynamo.tableStatus,
+            awsRegion: config.awsRegion,
+          },
+        );
         return { data: await getBackendStatus(config, container) };
       }),
     },

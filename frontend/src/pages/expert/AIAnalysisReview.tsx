@@ -36,8 +36,14 @@ export function AIAnalysisReview() {
       <PageHeader
         eyebrow="Case workflow"
         title="AI Analysis Review"
-        description="Inspect a simulated AI output before recording expert observations."
-        badge={<DemoNote label="Pattern-based simulation" />}
+        description="Inspect the AI triage output before recording expert observations."
+        badge={
+          active.provider === 'gemini' ? (
+            <Badge tone="forest">Gemini AI{active.modelId ? ` · ${active.modelId}` : ''}</Badge>
+          ) : (
+            <DemoNote label="Pattern-based simulation" />
+          )
+        }
         actions={
           <Select
             value={active.id}
@@ -62,7 +68,7 @@ export function AIAnalysisReview() {
 
           <div className="mt-7 grid gap-4 sm:grid-cols-3">
             {[
-              { label: 'Demo confidence', value: `${active.confidence}%` },
+              { label: active.provider === 'gemini' ? 'AI confidence' : 'Demo confidence', value: `${active.confidence}%` },
               { label: 'Alternatives', value: active.alternatives.length },
               { label: 'Symptoms mapped', value: active.observedSymptoms.length },
             ].map((item) => (

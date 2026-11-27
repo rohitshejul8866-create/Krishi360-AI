@@ -6,7 +6,13 @@ import type { Farm, SoilReading } from '../../models/farm';
 import type { MandiPrice } from '../../models/mandi';
 import type { Scheme } from '../../models/scheme';
 import type { Inspection, StorageAlert, StorageBatch, StorageReading } from '../../models/storage';
-import type { UserAccount } from '../../models/user';
+import {
+  mergeUserAccount,
+  splitUserAccount,
+  type UserAccount,
+  type UserLoginRecord,
+  type UserProfileRecord,
+} from '../../models/user';
 import type { NotificationRecord, PlatformSettingsRecord, UserWorkspaceState } from '../../models/workspace';
 import { dateKey } from '../../utils/ids';
 import { decodeCursor, encodeCursor, type Page, type PageRequest } from '../../utils/pagination';
@@ -25,8 +31,10 @@ import type {
 import {
   getSqliteItem,
   putSqliteItem,
+  resolveSqliteTable,
   updateSqliteItem,
   type SqliteKeyAttrs,
+  type SqliteTableName,
 } from './client';
 
 function paginateList<T>(items: T[], page: PageRequest): Page<T> {
@@ -48,6 +56,17 @@ function queryRows<T>(
   const stmt = db.prepare(sql);
   const rows = stmt.all(...params) as Array<{ data: string }>;
   return rows.map((r) => JSON.parse(r.data) as T);
+}
+
+function selectEntityRows<T>(
+  db: DatabaseSync,
+  table: SqliteTableName,
+  whereClause: string,
+  params: Array<string | number | null>,
+  orderBy = 'created_at DESC',
+): T[] {
+  const target = resolveSqliteTable(table);
+  return queryRows<T>(db, `SELECT data FROM ${target} WHERE ${whereClause} ORDER BY ${orderBy}`, params);
 }
 
 function caseKeys(c: CropCase): SqliteKeyAttrs {
@@ -82,7 +101,7 @@ export class SqliteCropCaseRepository implements CropCaseRepository {
   async listByFarmer(farmerId: string, page: PageRequest, status?: CaseStatus): Promise<Page<CropCase>> {
     const rows = queryRows<CropCase>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk DESC',
+      'SELECT data FROM krishi_flag_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk DESC',
       ['cropCase', `FARMER#${farmerId}`],
     ).filter((c) => !status || c.status === status);
     return paginateList(rows, page);
@@ -92,7 +111,7 @@ export class SqliteCropCaseRepository implements CropCaseRepository {
     const queueStatuses = new Set(['new', 'ai_review', 'expert_review']);
     const rows = queryRows<CropCase>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi2pk = ? ORDER BY created_at DESC',
+      'SELECT data FROM krishi_flag_items WHERE entity_type = ? AND gsi2pk = ? ORDER BY created_at DESC',
       ['cropCase', 'EXPERTQUEUE'],
     ).filter(
       (c) =>
@@ -105,7 +124,7 @@ export class SqliteCropCaseRepository implements CropCaseRepository {
   async listAll(page: PageRequest, status?: CaseStatus): Promise<Page<CropCase>> {
     const rows = queryRows<CropCase>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? ORDER BY created_at DESC',
+      'SELECT data FROM krishi_flag_items WHERE entity_type = ? ORDER BY created_at DESC',
       ['cropCase'],
     ).filter((c) => !status || c.status === status);
     return paginateList(rows, page);
@@ -142,19 +161,19 @@ export class SqliteMandiRepository implements MandiRepository {
     if (filters.crop) {
       rows = queryRows<MandiPrice>(
         this.db,
-        'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk DESC',
+        'SELECT data FROM krishi_flag_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk DESC',
         ['mandiPrice', `CROP#${filters.crop}`],
       );
     } else if (filters.state) {
       rows = queryRows<MandiPrice>(
         this.db,
-        'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi2pk = ? ORDER BY gsi2sk DESC',
+        'SELECT data FROM krishi_flag_items WHERE entity_type = ? AND gsi2pk = ? ORDER BY gsi2sk DESC',
         ['mandiPrice', `STATE#${filters.state}`],
       );
     } else {
       rows = queryRows<MandiPrice>(
         this.db,
-        'SELECT data FROM krishi_items WHERE entity_type = ? ORDER BY created_at DESC',
+        'SELECT data FROM krishi_flag_items WHERE entity_type = ? ORDER BY created_at DESC',
         ['mandiPrice'],
       );
     }
@@ -206,7 +225,7 @@ export class SqliteFarmRepository implements FarmRepository {
   async listByOwner(ownerId: string, page: PageRequest): Promise<Page<Farm>> {
     const rows = queryRows<Farm>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk DESC',
+      'SELECT data FROM krishi_flag_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk DESC',
       ['farm', `FARMER#${ownerId}`],
     );
     return paginateList(rows, page);
@@ -215,7 +234,7 @@ export class SqliteFarmRepository implements FarmRepository {
   async listAll(page: PageRequest): Promise<Page<Farm>> {
     const rows = queryRows<Farm>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? ORDER BY created_at DESC',
+      'SELECT data FROM krishi_flag_items WHERE entity_type = ? ORDER BY created_at DESC',
       ['farm'],
     );
     return paginateList(rows, page);
@@ -239,7 +258,7 @@ export class SqliteFarmRepository implements FarmRepository {
   async listReadings(farmId: string, plotId: string | undefined, page: PageRequest): Promise<Page<SoilReading>> {
     const rows = queryRows<SoilReading>(
       this.db,
-      'SELECT data FROM krishi_items WHERE pk = ? AND sk LIKE ? ORDER BY sk DESC',
+      'SELECT data FROM krishi_flag_items WHERE pk = ? AND sk LIKE ? ORDER BY sk DESC',
       [`FARM#${farmId}`, 'READING#%'],
     ).filter((r) => !plotId || r.plotId === plotId);
     return paginateList(rows, page);
@@ -276,7 +295,7 @@ export class SqliteStorageRepository implements StorageRepository {
   async listByOwner(ownerId: string, page: PageRequest): Promise<Page<StorageBatch>> {
     const rows = queryRows<StorageBatch>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk DESC',
+      'SELECT data FROM krishi_flag_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk DESC',
       ['storageBatch', `FARMER#${ownerId}`],
     );
     return paginateList(rows, page);
@@ -285,7 +304,7 @@ export class SqliteStorageRepository implements StorageRepository {
   async listAll(page: PageRequest): Promise<Page<StorageBatch>> {
     const rows = queryRows<StorageBatch>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? ORDER BY created_at DESC',
+      'SELECT data FROM krishi_flag_items WHERE entity_type = ? ORDER BY created_at DESC',
       ['storageBatch'],
     );
     return paginateList(rows, page);
@@ -309,7 +328,7 @@ export class SqliteStorageRepository implements StorageRepository {
   async listReadings(batchId: string, page: PageRequest): Promise<Page<StorageReading>> {
     const rows = queryRows<StorageReading>(
       this.db,
-      'SELECT data FROM krishi_items WHERE pk = ? AND sk LIKE ? ORDER BY sk DESC',
+      'SELECT data FROM krishi_flag_items WHERE pk = ? AND sk LIKE ? ORDER BY sk DESC',
       [`BATCH#${batchId}`, 'READING#%'],
     );
     return paginateList(rows, page);
@@ -333,7 +352,7 @@ export class SqliteStorageRepository implements StorageRepository {
   async listAlerts(batchId: string, page: PageRequest): Promise<Page<StorageAlert>> {
     const rows = queryRows<StorageAlert>(
       this.db,
-      'SELECT data FROM krishi_items WHERE pk = ? AND sk LIKE ? ORDER BY sk DESC',
+      'SELECT data FROM krishi_flag_items WHERE pk = ? AND sk LIKE ? ORDER BY sk DESC',
       [`BATCH#${batchId}`, 'ALERT#%'],
     );
     return paginateList(rows, page);
@@ -357,7 +376,7 @@ export class SqliteStorageRepository implements StorageRepository {
   async listInspections(batchId: string): Promise<Inspection[]> {
     return queryRows<Inspection>(
       this.db,
-      'SELECT data FROM krishi_items WHERE pk = ? AND sk LIKE ? ORDER BY sk DESC',
+      'SELECT data FROM krishi_flag_items WHERE pk = ? AND sk LIKE ? ORDER BY sk DESC',
       [`BATCH#${batchId}`, 'INSPECTION#%'],
     );
   }
@@ -391,12 +410,12 @@ export class SqliteSchemeRepository implements SchemeRepository {
     const rows = filters.category
       ? queryRows<Scheme>(
           this.db,
-          'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk ASC',
+          'SELECT data FROM krishi_flag_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY gsi1sk ASC',
           ['scheme', `CATEGORY#${filters.category}`],
         )
       : queryRows<Scheme>(
           this.db,
-          'SELECT data FROM krishi_items WHERE entity_type = ? ORDER BY gsi1sk ASC',
+          'SELECT data FROM krishi_flag_items WHERE entity_type = ? ORDER BY gsi1sk ASC',
           ['scheme'],
         );
 
@@ -439,23 +458,23 @@ export class SqliteAuditRepository implements AuditRepository {
     const rows = actorId
       ? queryRows<AuditEntry>(
           this.db,
-          'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY created_at DESC',
+          'SELECT data FROM krishi_flag_items WHERE entity_type = ? AND gsi1pk = ? ORDER BY created_at DESC',
           ['auditEntry', `ACTOR#${actorId}`],
         )
       : queryRows<AuditEntry>(
           this.db,
-          'SELECT data FROM krishi_items WHERE entity_type = ? ORDER BY created_at DESC',
+          'SELECT data FROM krishi_flag_items WHERE entity_type = ? ORDER BY created_at DESC',
           ['auditEntry'],
         );
     return paginateList(rows, page);
   }
 }
 
-function userKeys(u: UserAccount): SqliteKeyAttrs {
+function userLoginKeys(u: UserLoginRecord): SqliteKeyAttrs {
   return {
     pk: `USER#${u.id}`,
-    sk: 'META',
-    entityType: 'userAccount',
+    sk: 'LOGIN',
+    entityType: 'userLogin',
     gsi1pk: `EMAIL#${u.email.toLowerCase()}`,
     gsi1sk: `USER#${u.id}`,
     gsi2pk: `ROLE#${u.role}`,
@@ -465,43 +484,83 @@ function userKeys(u: UserAccount): SqliteKeyAttrs {
   };
 }
 
+function userProfileKeys(p: UserProfileRecord): SqliteKeyAttrs {
+  return {
+    pk: `USER_PROFILE#${p.id}`,
+    sk: 'META',
+    entityType: 'userProfile',
+    gsi1pk: `PROFILE#${p.id}`,
+    gsi1sk: p.updatedAt,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+  };
+}
+
 export class SqliteUserRepository implements UserRepository {
   constructor(private db: DatabaseSync) {}
 
   async create(item: UserAccount): Promise<void> {
-    putSqliteItem(this.db, userKeys(item), item, item.version);
+    const { login, profile } = splitUserAccount(item);
+    putSqliteItem(this.db, userLoginKeys(login), login, login.version, 'krishi_users');
+    putSqliteItem(this.db, userProfileKeys(profile), profile, profile.version, 'krishi_flag_items');
   }
 
   async get(id: string): Promise<UserAccount | null> {
-    return getSqliteItem<UserAccount>(this.db, `USER#${id}`);
+    const login = getSqliteItem<UserLoginRecord>(this.db, `USER#${id}`, 'LOGIN', 'krishi_users');
+    if (!login) return null;
+    const profile = getSqliteItem<UserProfileRecord>(
+      this.db,
+      `USER_PROFILE#${id}`,
+      'META',
+      'krishi_flag_items',
+    );
+    return mergeUserAccount(login, profile);
   }
 
   async getByEmail(email: string): Promise<UserAccount | null> {
-    const rows = queryRows<UserAccount>(
+    const rows = selectEntityRows<UserLoginRecord>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi1pk = ? LIMIT 1',
-      ['userAccount', `EMAIL#${email.trim().toLowerCase()}`],
+      'krishi_users',
+      'entity_type = ? AND gsi1pk = ?',
+      ['userLogin', `EMAIL#${email.trim().toLowerCase()}`],
+      'created_at DESC',
     );
-    return rows[0] ?? null;
+    const login = rows[0];
+    if (!login) return null;
+    const profile = getSqliteItem<UserProfileRecord>(
+      this.db,
+      `USER_PROFILE#${login.id}`,
+      'META',
+      'krishi_flag_items',
+    );
+    return mergeUserAccount(login, profile);
   }
 
   async update(item: UserAccount, expectedVersion: number): Promise<void> {
-    updateSqliteItem(this.db, userKeys(item), item, expectedVersion);
+    const { login, profile } = splitUserAccount(item);
+    updateSqliteItem(this.db, userLoginKeys(login), login, expectedVersion, 'krishi_users');
+    putSqliteItem(this.db, userProfileKeys(profile), profile, profile.version, 'krishi_flag_items');
   }
 
   async list(page: PageRequest, role?: Role): Promise<Page<UserAccount>> {
-    const rows = role
-      ? queryRows<UserAccount>(
+    const logins = role
+      ? selectEntityRows<UserLoginRecord>(
           this.db,
-          'SELECT data FROM krishi_items WHERE entity_type = ? AND gsi2pk = ? ORDER BY created_at DESC',
-          ['userAccount', `ROLE#${role}`],
+          'krishi_users',
+          'entity_type = ? AND gsi2pk = ?',
+          ['userLogin', `ROLE#${role}`],
         )
-      : queryRows<UserAccount>(
-          this.db,
-          'SELECT data FROM krishi_items WHERE entity_type = ? ORDER BY created_at DESC',
-          ['userAccount'],
-        );
-    return paginateList(rows, page);
+      : selectEntityRows<UserLoginRecord>(this.db, 'krishi_users', 'entity_type = ?', ['userLogin']);
+    const accounts = logins.map((login) => {
+      const profile = getSqliteItem<UserProfileRecord>(
+        this.db,
+        `USER_PROFILE#${login.id}`,
+        'META',
+        'krishi_flag_items',
+      );
+      return mergeUserAccount(login, profile);
+    });
+    return paginateList(accounts, page);
   }
 }
 
@@ -532,7 +591,7 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository {
   async listNotifications(page: PageRequest): Promise<Page<NotificationRecord>> {
     const rows = queryRows<NotificationRecord>(
       this.db,
-      'SELECT data FROM krishi_items WHERE entity_type = ? ORDER BY created_at DESC',
+      'SELECT data FROM krishi_flag_items WHERE entity_type = ? ORDER BY created_at DESC',
       ['notification'],
     );
     return paginateList(rows, page);

@@ -25,7 +25,7 @@ export interface BackendPaginated<T> {
 }
 
 export interface BackendAiAnalysis {
-  provider: 'bedrock' | 'heuristic'
+  provider: 'gemini' | 'bedrock' | 'heuristic'
   modelId?: string
   condition: string
   confidence: number
@@ -127,6 +127,8 @@ export interface BackendFarm {
   areaHa: number
   soilType: string
   irrigationType: string
+  centerLat?: number
+  centerLng?: number
   plots: Array<{
     id: string
     name: string
@@ -136,6 +138,8 @@ export interface BackendFarm {
     soilMoisture?: number
     lastIrrigated?: string
     status?: 'healthy' | 'watch' | 'attention'
+    lat?: number
+    lng?: number
   }>
 }
 
@@ -146,6 +150,13 @@ export interface BackendWorkspaceSnapshot {
     applications: SchemeApplication[]
     mandiAlerts: MandiAlert[]
     irrigationSchedules: IrrigationSchedule[]
+    customCrops?: string[]
+    preferences?: {
+      language: string
+      notificationsEnabled: boolean
+      compactTables: boolean
+      expertReviewSlaHours?: number
+    }
   }
   notifications: NotificationItem[]
   settings: PlatformSettings
@@ -186,6 +197,10 @@ export function mapAnalysisResult(ai: BackendAiAnalysis): AnalysisResult {
     nextSteps: ai.nextSteps,
     recommendExpert: ai.recommendExpert,
     disclaimer: ai.disclaimer || ANALYSIS_DISCLAIMER,
+    provider: ai.provider,
+    modelId: ai.modelId,
+    uncertainty: ai.uncertainty,
+    simulated: ai.simulated,
   }
 }
 
@@ -206,6 +221,10 @@ export function mapCropCase(item: BackendCropCase): CropCase {
     explanation: item.aiAnalysis?.explanation ?? 'Awaiting AI pattern analysis.',
     nextSteps: item.aiAnalysis?.nextSteps ?? [],
     recommendExpert: item.aiAnalysis?.recommendExpert ?? true,
+    provider: item.aiAnalysis?.provider,
+    modelId: item.aiAnalysis?.modelId,
+    uncertainty: item.aiAnalysis?.uncertainty,
+    simulated: item.aiAnalysis?.simulated,
     status: item.status,
     priority: item.priority,
     submittedAt: item.createdAt,

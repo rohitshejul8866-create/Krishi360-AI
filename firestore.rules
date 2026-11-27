@@ -1,0 +1,583 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Global Hardened Helpers
+    // -------------------------------------------------------------------------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdminEmail() {
+      return isVerified() &&
+        request.auth.token.email is string &&
+        request.auth.token.email.lower() == 'rohitshejul5566@gmail.com';
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        isBootstrappedAdminEmail() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function hasValidParentUser(userId) {
+      return exists(/databases/$(database)/documents/users/$(userId)) &&
+        get(/databases/$(database)/documents/users/$(userId)).data.uid == userId;
+    }
+
+    function isOptionalString(data, field, maxLen) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isStringList(listVal, maxItems, maxItemLen) {
+      return listVal is list &&
+        listVal.size() <= maxItems &&
+        (listVal.size() == 0 || (listVal[0] is string && listVal[0].size() <= maxItemLen));
+    }
+
+    function isMapList(listVal, maxItems) {
+      return listVal is list &&
+        listVal.size() <= maxItems &&
+        (listVal.size() == 0 || listVal[0] is map);
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity Validation Blueprints (Anti-Update-Gap)
+    // -------------------------------------------------------------------------
+    function isValidUserSummary(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'role', 'photoUrl', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.role in ['farmer', 'expert', 'admin'] &&
+        isOptionalString(data, 'photoUrl', 512) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'location', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'phone', 'location', 'organisation', 'specialisation', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.location is string && data.location.size() >= 1 && data.location.size() <= 160 &&
+        isOptionalString(data, 'phone', 32) &&
+        isOptionalString(data, 'organisation', 160) &&
+        isOptionalString(data, 'specialisation', 160) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRecord(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.uid == userId &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 254 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidFarm(data, userId) {
+      return data.keys().hasAll(['ownerId', 'name', 'location', 'areaHa', 'soilType', 'irrigationType', 'plots', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'name', 'location', 'areaHa', 'soilType', 'irrigationType', 'plots', 'centerLat', 'centerLng', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+        data.location is string && data.location.size() >= 1 && data.location.size() <= 160 &&
+        data.areaHa is number && data.areaHa >= 0 && data.areaHa <= 100000 &&
+        data.soilType is string && data.soilType.size() >= 1 && data.soilType.size() <= 80 &&
+        data.irrigationType is string && data.irrigationType.size() >= 1 && data.irrigationType.size() <= 80 &&
+        isMapList(data.plots, 50) &&
+        (!('centerLat' in data) || (data.centerLat is number && data.centerLat >= -90 && data.centerLat <= 90)) &&
+        (!('centerLng' in data) || (data.centerLng is number && data.centerLng >= -180 && data.centerLng <= 180)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidSoilReading(data, userId) {
+      return data.keys().hasAll(['ownerId', 'farmId', 'plotId', 'soilMoisture', 'source', 'createdAt']) &&
+        data.keys().hasOnly(['ownerId', 'farmId', 'plotId', 'soilMoisture', 'source', 'weather', 'notes', 'recommendation', 'createdAt']) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        isValidId(data.farmId) &&
+        isValidId(data.plotId) &&
+        data.soilMoisture is number && data.soilMoisture >= 0 && data.soilMoisture <= 100 &&
+        data.source in ['manual', 'simulated'] &&
+        (!('weather' in data) || (data.weather is map && data.weather.keys().size() <= 10)) &&
+        isOptionalString(data, 'notes', 1000) &&
+        (!('recommendation' in data) || (data.recommendation is map && data.recommendation.keys().size() <= 12)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidStorageBatch(data, userId) {
+      return data.keys().hasAll(['ownerId', 'code', 'crop', 'quantityKg', 'location', 'tempC', 'humidity', 'minTemp', 'maxTemp', 'maxHumidity', 'status', 'inspections', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'code', 'crop', 'quantityKg', 'location', 'tempC', 'humidity', 'minTemp', 'maxTemp', 'maxHumidity', 'status', 'inspections', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        data.code is string && data.code.size() >= 1 && data.code.size() <= 64 &&
+        data.crop is string && data.crop.size() >= 1 && data.crop.size() <= 80 &&
+        data.quantityKg is number && data.quantityKg > 0 && data.quantityKg <= 10000000 &&
+        data.location is string && data.location.size() >= 1 && data.location.size() <= 160 &&
+        data.tempC is number && data.tempC >= -40 && data.tempC <= 80 &&
+        data.humidity is number && data.humidity >= 0 && data.humidity <= 100 &&
+        data.minTemp is number && data.minTemp >= -40 && data.minTemp <= 80 &&
+        data.maxTemp is number && data.maxTemp >= -40 && data.maxTemp <= 80 &&
+        data.maxHumidity is number && data.maxHumidity >= 0 && data.maxHumidity <= 100 &&
+        data.status in ['normal', 'warning', 'critical'] &&
+        isMapList(data.inspections, 50) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCropCase(data, userId) {
+      return data.keys().hasAll(['ownerId', 'farmerName', 'crop', 'plantPart', 'location', 'symptoms', 'imageUrl', 'condition', 'confidence', 'alternatives', 'observedSymptoms', 'explanation', 'nextSteps', 'recommendExpert', 'status', 'priority', 'reviewStatus', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'farmerName', 'crop', 'plantPart', 'location', 'symptoms', 'imageUrl', 'condition', 'confidence', 'alternatives', 'observedSymptoms', 'explanation', 'nextSteps', 'recommendExpert', 'provider', 'modelId', 'uncertainty', 'simulated', 'status', 'priority', 'reviewStatus', 'expertNotes', 'expertGuidance', 'reviewedBy', 'reviewedAt', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        data.farmerName is string && data.farmerName.size() >= 1 && data.farmerName.size() <= 120 &&
+        data.crop is string && data.crop.size() >= 1 && data.crop.size() <= 80 &&
+        data.plantPart is string && data.plantPart.size() >= 1 && data.plantPart.size() <= 80 &&
+        data.location is string && data.location.size() >= 1 && data.location.size() <= 160 &&
+        data.symptoms is string && data.symptoms.size() <= 1500 &&
+        data.imageUrl is string && data.imageUrl.size() <= 512 &&
+        data.condition is string && data.condition.size() >= 1 && data.condition.size() <= 200 &&
+        data.confidence is number && data.confidence >= 0 && data.confidence <= 100 &&
+        isMapList(data.alternatives, 5) &&
+        isStringList(data.observedSymptoms, 15, 200) &&
+        data.explanation is string && data.explanation.size() <= 2500 &&
+        isStringList(data.nextSteps, 10, 300) &&
+        data.recommendExpert is bool &&
+        (!('provider' in data) || data.provider in ['gemini', 'bedrock', 'heuristic']) &&
+        isOptionalString(data, 'modelId', 120) &&
+        isOptionalString(data, 'uncertainty', 1000) &&
+        (!('simulated' in data) || data.simulated is bool) &&
+        data.status in ['new', 'ai_review', 'expert_review', 'resolved'] &&
+        data.priority in ['low', 'medium', 'high'] &&
+        data.reviewStatus in ['pending', 'in_review', 'completed', 'needs_info'] &&
+        isOptionalString(data, 'expertNotes', 2000) &&
+        isOptionalString(data, 'expertGuidance', 2000) &&
+        isOptionalString(data, 'reviewedBy', 120) &&
+        isOptionalString(data, 'reviewedAt', 64) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWorkspaceState(data, userId) {
+      return data.keys().hasAll(['ownerId', 'savedSchemeIds', 'applications', 'mandiAlerts', 'irrigationSchedules', 'customCrops', 'preferences', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'savedSchemeIds', 'applications', 'mandiAlerts', 'irrigationSchedules', 'customCrops', 'preferences', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        isStringList(data.savedSchemeIds, 100, 128) &&
+        isMapList(data.applications, 50) &&
+        isMapList(data.mandiAlerts, 50) &&
+        isMapList(data.irrigationSchedules, 100) &&
+        isStringList(data.customCrops, 100, 80) &&
+        data.preferences is map &&
+        data.preferences.keys().hasOnly(['language', 'notificationsEnabled', 'compactTables', 'expertReviewSlaHours']) &&
+        (!('language' in data.preferences) || (data.preferences.language is string && data.preferences.language.size() <= 40)) &&
+        (!('notificationsEnabled' in data.preferences) || data.preferences.notificationsEnabled is bool) &&
+        (!('compactTables' in data.preferences) || data.preferences.compactTables is bool) &&
+        (!('expertReviewSlaHours' in data.preferences) || (data.preferences.expertReviewSlaHours is number && data.preferences.expertReviewSlaHours >= 1 && data.preferences.expertReviewSlaHours <= 168)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCopilotSession(data, userId) {
+      return data.keys().hasAll(['ownerId', 'title', 'mode', 'messages', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'title', 'mode', 'messages', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        data.mode in ['grounded', 'fast'] &&
+        isMapList(data.messages, 100) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserNotification(data, userId) {
+      return data.keys().hasAll(['ownerId', 'title', 'body', 'severity', 'audience', 'read', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'title', 'body', 'severity', 'audience', 'read', 'createdAt', 'updatedAt']) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+        data.body is string && data.body.size() >= 1 && data.body.size() <= 1000 &&
+        data.severity in ['info', 'success', 'warning', 'critical'] &&
+        data.audience in ['farmer', 'expert', 'admin', 'all'] &&
+        data.read is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // -------------------------------------------------------------------------
+    // Admins Registry
+    // -------------------------------------------------------------------------
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+      allow create: if isValidId(userId) &&
+        isVerified() &&
+        isValidAdminRecord(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        ((isBootstrappedAdminEmail() && request.auth.uid == userId) || isAdmin());
+      allow update, delete: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Users Root (Non-PII Summary Only) & User Subcollections
+    // -------------------------------------------------------------------------
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+
+      allow create: if isValidId(userId) &&
+        isVerified() &&
+        isOwner(userId) &&
+        isValidUserSummary(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().role == 'farmer' || isBootstrappedAdminEmail());
+
+      allow update: if isValidId(userId) &&
+        isVerified() &&
+        isValidUserSummary(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoUrl', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isValidId(userId) && isAdmin();
+
+      // Strictly Isolated Private PII Profile (Split Collection Strategy)
+      match /private/profile {
+        allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow list: if false;
+
+        allow create: if isValidId(userId) &&
+          isVerified() &&
+          isOwner(userId) &&
+          isValidPrivateProfile(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId);
+
+        allow update: if isValidId(userId) &&
+          isVerified() &&
+          isValidPrivateProfile(incoming(), userId) &&
+          incoming().uid == existing().uid &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId) &&
+          (
+            isAdmin() ||
+            (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['email', 'phone', 'location', 'organisation', 'specialisation', 'updatedAt'])
+            )
+          );
+
+        allow delete: if isValidId(userId) && isAdmin();
+      }
+
+      // Farms & Plots
+      match /farms/{farmId} {
+        allow get: if isValidId(userId) && isValidId(farmId) &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+
+        allow list: if isSignedIn() &&
+          (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+
+        allow create: if isValidId(userId) && isValidId(farmId) &&
+          isVerified() &&
+          isOwner(userId) &&
+          isValidFarm(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId);
+
+        allow update: if isValidId(userId) && isValidId(farmId) &&
+          isVerified() &&
+          isValidFarm(incoming(), userId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId) &&
+          (
+            isAdmin() ||
+            (
+              isOwner(userId) &&
+              (
+                incoming().diff(existing()).affectedKeys().hasOnly(['name', 'location', 'areaHa', 'soilType', 'irrigationType', 'centerLat', 'centerLng', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['plots', 'areaHa', 'updatedAt'])
+              )
+            )
+          );
+
+        allow delete: if isValidId(userId) && isValidId(farmId) &&
+          isVerified() &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+      }
+
+      // JalSense Soil Readings
+      match /soilReadings/{readingId} {
+        allow get: if isValidId(userId) && isValidId(readingId) &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+
+        allow list: if isSignedIn() &&
+          (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+
+        allow create: if isValidId(userId) && isValidId(readingId) &&
+          isVerified() &&
+          isOwner(userId) &&
+          isValidSoilReading(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          hasValidParentUser(userId) &&
+          exists(/databases/$(database)/documents/users/$(userId)/farms/$(incoming().farmId));
+
+        allow update: if false;
+
+        allow delete: if isValidId(userId) && isValidId(readingId) &&
+          isVerified() &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+      }
+
+      // GrainGuard Storage Batches
+      match /storageBatches/{batchId} {
+        allow get: if isValidId(userId) && isValidId(batchId) &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+
+        allow list: if isSignedIn() &&
+          (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+
+        allow create: if isValidId(userId) && isValidId(batchId) &&
+          isVerified() &&
+          isOwner(userId) &&
+          isValidStorageBatch(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId);
+
+        allow update: if isValidId(userId) && isValidId(batchId) &&
+          isVerified() &&
+          isValidStorageBatch(incoming(), userId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId) &&
+          (
+            isAdmin() ||
+            (
+              isOwner(userId) &&
+              (
+                incoming().diff(existing()).affectedKeys().hasOnly(['tempC', 'humidity', 'status', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['inspections', 'updatedAt'])
+              )
+            )
+          );
+
+        allow delete: if isValidId(userId) && isValidId(batchId) &&
+          isVerified() &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+      }
+
+      // CropDoctor AI Cases
+      match /cropCases/{caseId} {
+        allow get: if isValidId(userId) && isValidId(caseId) &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+
+        allow list: if isSignedIn() &&
+          (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+
+        allow create: if isValidId(userId) && isValidId(caseId) &&
+          isVerified() &&
+          isOwner(userId) &&
+          isValidCropCase(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId);
+
+        allow update: if isValidId(userId) && isValidId(caseId) &&
+          isVerified() &&
+          isValidCropCase(incoming(), userId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId) &&
+          (
+            isAdmin() ||
+            (
+              isOwner(userId) &&
+              existing().status != 'resolved' &&
+              existing().reviewStatus != 'completed' &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['symptoms', 'priority', 'updatedAt'])
+            )
+          );
+
+        allow delete: if isValidId(userId) && isValidId(caseId) &&
+          isVerified() &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+      }
+
+      // User Workspace State (Schemes, Alerts, Irrigation Schedules, Custom Crops, Preferences)
+      match /workspace/state {
+        allow get: if isValidId(userId) &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+
+        allow list: if false;
+
+        allow create: if isValidId(userId) &&
+          isVerified() &&
+          isOwner(userId) &&
+          isValidWorkspaceState(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId);
+
+        allow update: if isValidId(userId) &&
+          isVerified() &&
+          isValidWorkspaceState(incoming(), userId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId) &&
+          (
+            isAdmin() ||
+            (
+              isOwner(userId) &&
+              (
+                incoming().diff(existing()).affectedKeys().hasOnly(['savedSchemeIds', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['applications', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['mandiAlerts', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['irrigationSchedules', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['customCrops', 'updatedAt']) ||
+                incoming().diff(existing()).affectedKeys().hasOnly(['preferences', 'updatedAt'])
+              )
+            )
+          );
+
+        allow delete: if isValidId(userId) && isAdmin();
+      }
+
+      // Multi-Turn Gemini Copilot Sessions
+      match /copilotSessions/{sessionId} {
+        allow get: if isValidId(userId) && isValidId(sessionId) &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+
+        allow list: if isSignedIn() &&
+          (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+
+        allow create: if isValidId(userId) && isValidId(sessionId) &&
+          isVerified() &&
+          isOwner(userId) &&
+          isValidCopilotSession(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId);
+
+        allow update: if isValidId(userId) && isValidId(sessionId) &&
+          isVerified() &&
+          isValidCopilotSession(incoming(), userId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId) &&
+          (
+            isAdmin() ||
+            (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['title', 'mode', 'messages', 'updatedAt'])
+            )
+          );
+
+        allow delete: if isValidId(userId) && isValidId(sessionId) &&
+          isVerified() &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+      }
+
+      // Notifications
+      match /notifications/{notificationId} {
+        allow get: if isValidId(userId) && isValidId(notificationId) &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+
+        allow list: if isSignedIn() &&
+          (resource.data.ownerId == request.auth.uid || isBootstrappedAdminEmail());
+
+        allow create: if isValidId(userId) && isValidId(notificationId) &&
+          isVerified() &&
+          isOwner(userId) &&
+          isValidUserNotification(incoming(), userId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId);
+
+        allow update: if isValidId(userId) && isValidId(notificationId) &&
+          isVerified() &&
+          isValidUserNotification(incoming(), userId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          hasValidParentUser(userId) &&
+          (
+            isAdmin() ||
+            (
+              isOwner(userId) &&
+              incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt'])
+            )
+          );
+
+        allow delete: if isValidId(userId) && isValidId(notificationId) &&
+          isVerified() &&
+          (isOwner(userId) || isAdmin()) &&
+          hasValidParentUser(userId);
+      }
+    }
+  }
+}

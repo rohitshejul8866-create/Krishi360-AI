@@ -13,7 +13,7 @@ import path from 'node:path';
 
 export type AuthMode = 'dev' | 'cognito';
 export type DataBackend = 'memory' | 'sqlite' | 'dynamodb';
-export type AiProvider = 'disabled' | 'heuristic' | 'bedrock';
+export type AiProvider = 'disabled' | 'heuristic' | 'bedrock' | 'gemini';
 
 export interface AppConfig {
   nodeEnv: string;
@@ -22,6 +22,8 @@ export interface AppConfig {
   dataBackend: DataBackend;
   sqliteDbPath: string;
   awsRegion: string;
+  usersTableName: string;
+  flagTableName: string;
   tableName: string;
   dynamoEndpoint?: string;
   awsCredentialsConfigured: boolean;
@@ -32,6 +34,9 @@ export interface AppConfig {
   allowedImageTypes: ReadonlyArray<string>;
   aiProvider: AiProvider;
   bedrockModelId: string;
+  bedrockBearerTokenConfigured: boolean;
+  geminiModelId: string;
+  geminiApiKeyConfigured: boolean;
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   port: number;
 }
@@ -76,7 +81,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     isLambda ? 'dynamodb' : 'sqlite',
     'DATA_BACKEND',
   );
-  const aiProvider = oneOf(env.AI_PROVIDER, ['disabled', 'heuristic', 'bedrock'] as const, 'disabled', 'AI_PROVIDER');
+  const aiProvider = oneOf(
+    env.AI_PROVIDER,
+    ['disabled', 'heuristic', 'bedrock', 'gemini'] as const,
+    'disabled',
+    'AI_PROVIDER',
+  );
 
   // Dev-only escape hatches must never be usable in a deployed Lambda.
   if (isLambda && (authMode === 'dev' || dataBackend !== 'dynamodb' || aiProvider === 'heuristic')) {
@@ -92,10 +102,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     Boolean(env.AWS_WEB_IDENTITY_TOKEN_FILE) ||
     Boolean(dynamoEndpoint);
 
-  const bedrockModelId = env.BEDROCK_MODEL_ID ?? '';
+  const bedrockBearerTokenConfigured = Boolean(
+    env.AWS_BEARER_TOKEN_BEDROCK?.trim() || env.AWS_BEARER_TOKEN?.trim(),
+  );
+  const bedrockModelId =
+    env.BEDROCK_MODEL_ID?.trim() || (bedrockBearerTokenConfigured ? 'amazon.nova-lite-v1:0' : '');
   if (aiProvider === 'bedrock' && (!bedrockModelId || !awsRegion)) {
     throw new Error('AI_PROVIDER=bedrock requires BEDROCK_MODEL_ID and AWS_REGION to be configured.');
   }
+
+  const geminiApiKeyConfigured = Boolean(env.GEMINI_API_KEY?.trim());
+  const geminiModelId = env.GEMINI_MODEL_ID?.trim() || 'gemini-4-hydrogen';
 
   const allowedOrigins = (env.ALLOWED_ORIGINS ?? 'http://localhost:5173')
     .split(',')
@@ -112,7 +129,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     dataBackend,
     sqliteDbPath,
     awsRegion,
-    tableName: env.DYNAMODB_TABLE_NAME || 'krishi360-dev',
+    usersTableName: env.DYNAMODB_USERS_TABLE_NAME?.trim() || 'krishi360-users-dev',
+    flagTableName: env.DYNAMODB_FLAG_TABLE_NAME?.trim() || env.DYNAMODB_TABLE_NAME?.trim() || 'krishi360-flag-dev',
+    tableName: env.DYNAMODB_FLAG_TABLE_NAME?.trim() || env.DYNAMODB_TABLE_NAME?.trim() || 'krishi360-flag-dev',
     dynamoEndpoint,
     awsCredentialsConfigured,
     uploadBucketName: env.UPLOAD_BUCKET_NAME ?? '',
@@ -122,6 +141,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     allowedImageTypes: ALLOWED_IMAGE_TYPES,
     aiProvider,
     bedrockModelId,
+    bedrockBearerTokenConfigured,
+    geminiModelId,
+    geminiApiKeyConfigured,
     logLevel: oneOf(env.LOG_LEVEL, ['debug', 'info', 'warn', 'error'] as const, 'info', 'LOG_LEVEL'),
     port: positiveInt(env.PORT, 4000, 'PORT'),
   };

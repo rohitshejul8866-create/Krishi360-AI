@@ -6,18 +6,13 @@ import type {
   NotificationSeverity,
   PlatformSettingsRecord,
   SchemeApplicationRecord,
+  UserPreferencesRecord,
   UserWorkspaceState,
 } from '../models/workspace';
 import type { WorkspaceRepository } from '../repositories/types';
 import { makeId, nowIso } from '../utils/ids';
 import type { Logger } from '../utils/logger';
 import type { AuditService } from './auditService';
-
-const DEFAULT_SCHEDULES: IrrigationScheduleRecord[] = [
-  { id: 'sch-01', plot: 'Plot A — North Field', crop: 'Tomato', stage: 'Flowering', nextDate: '2026-11-23', waterLitres: 4800, reminder: true },
-  { id: 'sch-02', plot: 'Plot B — East Field', crop: 'Wheat', stage: 'Vegetative', nextDate: '2026-11-24', waterLitres: 3600, reminder: true },
-  { id: 'sch-03', plot: 'Plot C — Orchard', crop: 'Grapes', stage: 'Fruit / grain formation', nextDate: '2026-11-25', waterLitres: 3100, reminder: false },
-];
 
 const DEFAULT_SETTINGS: Omit<PlatformSettingsRecord, 'updatedAt' | 'version'> = {
   id: 'global',
@@ -35,6 +30,8 @@ export interface WorkspacePatchInput {
   applications?: SchemeApplicationRecord[];
   mandiAlerts?: MandiAlertRecord[];
   irrigationSchedules?: IrrigationScheduleRecord[];
+  customCrops?: string[];
+  preferences?: UserPreferencesRecord;
 }
 
 export interface WorkspaceSnapshot {
@@ -55,25 +52,11 @@ export class WorkspaceService {
 
     const initial: UserWorkspaceState = {
       userId,
-      savedSchemeIds: userId.startsWith('farmer') ? ['scheme-02', 'scheme-07'] : [],
-      applications:
-        userId === 'farmer-001'
-          ? [
-              {
-                id: 'app-001',
-                schemeId: 'scheme-02',
-                farmerId: 'farmer-001',
-                progress: 50,
-                stage: 'Application preparation',
-                updatedAt: '2026-11-20T10:00:00.000Z',
-              },
-            ]
-          : [],
-      mandiAlerts:
-        userId.startsWith('farmer')
-          ? [{ id: 'alert-01', crop: 'Tomato', district: 'Nashik', targetPrice: 1900, createdAt: '2026-11-19T08:00:00.000Z' }]
-          : [],
-      irrigationSchedules: userId.startsWith('farmer') ? DEFAULT_SCHEDULES : [],
+      savedSchemeIds: [],
+      applications: [],
+      mandiAlerts: [],
+      irrigationSchedules: [],
+      customCrops: [],
       updatedAt: nowIso(),
       version: 1,
     };
@@ -95,7 +78,12 @@ export class WorkspaceService {
     };
 
     const visibleNotifications = notifPage.items
-      .filter((n) => user.role === 'admin' || n.audience === 'all' || n.audience === user.role)
+      .filter((n) => {
+        if (n.targetUserId) {
+          return n.targetUserId === user.id || user.role === 'admin';
+        }
+        return user.role === 'admin' || n.audience === 'all' || n.audience === user.role;
+      })
       .map((n) => ({
         ...n,
         read: n.readBy.includes(user.id),
@@ -116,6 +104,8 @@ export class WorkspaceService {
       ...(patch.applications !== undefined ? { applications: patch.applications } : {}),
       ...(patch.mandiAlerts !== undefined ? { mandiAlerts: patch.mandiAlerts } : {}),
       ...(patch.irrigationSchedules !== undefined ? { irrigationSchedules: patch.irrigationSchedules } : {}),
+      ...(patch.customCrops !== undefined ? { customCrops: patch.customCrops } : {}),
+      ...(patch.preferences !== undefined ? { preferences: patch.preferences } : {}),
       updatedAt: nowIso(),
       version: current.version + 1,
     };
@@ -125,14 +115,25 @@ export class WorkspaceService {
 
   async createNotification(
     user: AuthUser,
-    input: { title: string; body: string; severity: NotificationSeverity; audience: Role | 'all' },
+    input: {
+      title: string;
+      body: string;
+      severity: NotificationSeverity;
+      audience: Role | 'all';
+      targetUserId?: string;
+    },
   ): Promise<NotificationRecord & { read: boolean }> {
+    const requestedTarget = user.role === 'admin' ? input.targetUserId : undefined;
+    const scopeToSelf =
+      user.role !== 'admin' && (input.audience === user.role || input.audience === 'all');
+    const targetUserId = requestedTarget ?? (scopeToSelf ? user.id : undefined);
     const record: NotificationRecord = {
       id: makeId('NOTIF'),
       title: input.title,
       body: input.body,
       severity: input.severity,
       audience: input.audience,
+      ...(targetUserId ? { targetUserId } : {}),
       readBy: [],
       createdAt: nowIso(),
     };
@@ -146,6 +147,7 @@ export class WorkspaceService {
   ): Promise<void> {
     const page = await this.repo.listNotifications({ limit: 100 });
     for (const item of page.items) {
+      if (item.targetUserId && item.targetUserId !== user.id && user.role !== 'admin') continue;
       if (input.id && item.id !== input.id) continue;
       if (!input.id && input.audience && item.audience !== input.audience && item.audience !== 'all') continue;
       if (!item.readBy.includes(user.id)) {

@@ -2,7 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { AppConfig } from '../../config/env';
+import { splitUserAccount, type UserAccount } from '../../models/user';
 import { ConflictError } from '../../utils/errors';
+
+export type SqliteTableName = 'krishi_users' | 'krishi_flag_items';
 
 export interface SqliteKeyAttrs {
   pk: string;
@@ -23,13 +26,16 @@ export interface SqliteInspection {
   journalMode: string;
   integrityOk: boolean;
   fileSizeBytes: number;
+  usersItems: number;
+  flagItems: number;
   totalItems: number;
   indexCount: number;
+  tables: SqliteTableName[];
   message: string;
 }
 
 const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS krishi_items (
+CREATE TABLE IF NOT EXISTS krishi_users (
   pk TEXT NOT NULL,
   sk TEXT NOT NULL,
   entity_type TEXT NOT NULL,
@@ -45,13 +51,125 @@ CREATE TABLE IF NOT EXISTS krishi_items (
   PRIMARY KEY (pk, sk)
 );
 
-CREATE INDEX IF NOT EXISTS idx_krishi_entity ON krishi_items (entity_type, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_krishi_gsi1 ON krishi_items (gsi1pk, gsi1sk);
-CREATE INDEX IF NOT EXISTS idx_krishi_gsi2 ON krishi_items (gsi2pk, gsi2sk);
-CREATE INDEX IF NOT EXISTS idx_krishi_pk_sk ON krishi_items (pk, sk);
+CREATE INDEX IF NOT EXISTS idx_krishi_users_entity ON krishi_users (entity_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_krishi_users_gsi1 ON krishi_users (gsi1pk, gsi1sk);
+CREATE INDEX IF NOT EXISTS idx_krishi_users_gsi2 ON krishi_users (gsi2pk, gsi2sk);
+CREATE INDEX IF NOT EXISTS idx_krishi_users_pk_sk ON krishi_users (pk, sk);
+
+CREATE TABLE IF NOT EXISTS krishi_flag_items (
+  pk TEXT NOT NULL,
+  sk TEXT NOT NULL,
+  entity_type TEXT NOT NULL,
+  gsi1pk TEXT,
+  gsi1sk TEXT,
+  gsi2pk TEXT,
+  gsi2sk TEXT,
+  search_text TEXT,
+  data TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (pk, sk)
+);
+
+CREATE INDEX IF NOT EXISTS idx_krishi_flag_entity ON krishi_flag_items (entity_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_krishi_flag_gsi1 ON krishi_flag_items (gsi1pk, gsi1sk);
+CREATE INDEX IF NOT EXISTS idx_krishi_flag_gsi2 ON krishi_flag_items (gsi2pk, gsi2sk);
+CREATE INDEX IF NOT EXISTS idx_krishi_flag_pk_sk ON krishi_flag_items (pk, sk);
 `;
 
+const ALLOWED_TABLES: ReadonlySet<SqliteTableName> = new Set(['krishi_users', 'krishi_flag_items']);
+
+export function resolveSqliteTable(table: SqliteTableName = 'krishi_flag_items'): SqliteTableName {
+  if (!ALLOWED_TABLES.has(table)) {
+    throw new Error(`Invalid SQLite table: ${table}`);
+  }
+  return table;
+}
+
 const instances = new Map<string, DatabaseSync>();
+
+function migrateLegacySingleTable(db: DatabaseSync): void {
+  const legacyExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'krishi_items'")
+    .get() as { name?: string } | undefined;
+  if (!legacyExists?.name) return;
+
+  const rows = db.prepare('SELECT * FROM krishi_items').all() as Array<{
+    pk: string;
+    sk: string;
+    entity_type: string;
+    gsi1pk: string | null;
+    gsi1sk: string | null;
+    gsi2pk: string | null;
+    gsi2sk: string | null;
+    search_text: string | null;
+    data: string;
+    version: number;
+    created_at: string;
+    updated_at: string;
+  }>;
+
+  for (const row of rows) {
+    if (row.entity_type === 'userAccount') {
+      const account = JSON.parse(row.data) as UserAccount;
+      const { login, profile } = splitUserAccount(account);
+      putSqliteItemIfAbsent(
+        db,
+        {
+          pk: `USER#${login.id}`,
+          sk: 'LOGIN',
+          entityType: 'userLogin',
+          gsi1pk: `EMAIL#${login.email.toLowerCase()}`,
+          gsi1sk: `USER#${login.id}`,
+          gsi2pk: `ROLE#${login.role}`,
+          gsi2sk: `${login.createdAt}#${login.id}`,
+          createdAt: login.createdAt,
+          updatedAt: login.updatedAt,
+        },
+        login,
+        login.version,
+        'krishi_users',
+      );
+      putSqliteItemIfAbsent(
+        db,
+        {
+          pk: `USER_PROFILE#${profile.id}`,
+          sk: 'META',
+          entityType: 'userProfile',
+          gsi1pk: `PROFILE#${profile.id}`,
+          gsi1sk: profile.updatedAt,
+          createdAt: profile.createdAt,
+          updatedAt: profile.updatedAt,
+        },
+        profile,
+        profile.version,
+        'krishi_flag_items',
+      );
+    } else {
+      putSqliteItemIfAbsent(
+        db,
+        {
+          pk: row.pk,
+          sk: row.sk,
+          entityType: row.entity_type,
+          gsi1pk: row.gsi1pk ?? undefined,
+          gsi1sk: row.gsi1sk ?? undefined,
+          gsi2pk: row.gsi2pk ?? undefined,
+          gsi2sk: row.gsi2sk ?? undefined,
+          searchText: row.search_text ?? undefined,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+        },
+        JSON.parse(row.data) as object,
+        row.version,
+        'krishi_flag_items',
+      );
+    }
+  }
+
+  db.exec('DROP TABLE IF EXISTS krishi_items;');
+}
 
 export function getSqliteDb(dbPath: string): DatabaseSync {
   const resolved = path.resolve(dbPath);
@@ -65,6 +183,7 @@ export function getSqliteDb(dbPath: string): DatabaseSync {
     db.exec('PRAGMA busy_timeout = 5000;');
     db.exec('PRAGMA temp_store = MEMORY;');
     db.exec(SCHEMA_SQL);
+    migrateLegacySingleTable(db);
     instances.set(resolved, db);
   }
   return db;
@@ -86,13 +205,23 @@ export function putSqliteItem<T extends object>(
   keys: SqliteKeyAttrs,
   data: T,
   version = 1,
+  table: SqliteTableName = 'krishi_flag_items',
 ): void {
+  const target = resolveSqliteTable(table);
   const now = new Date().toISOString();
-  const createdAt = keys.createdAt ?? (data as { createdAt?: string; timestamp?: string }).createdAt ?? (data as { timestamp?: string }).timestamp ?? now;
-  const updatedAt = keys.updatedAt ?? (data as { updatedAt?: string; lastUpdatedAt?: string }).updatedAt ?? (data as { lastUpdatedAt?: string }).lastUpdatedAt ?? createdAt;
+  const createdAt =
+    keys.createdAt ??
+    (data as { createdAt?: string; timestamp?: string }).createdAt ??
+    (data as { timestamp?: string }).timestamp ??
+    now;
+  const updatedAt =
+    keys.updatedAt ??
+    (data as { updatedAt?: string; lastUpdatedAt?: string }).updatedAt ??
+    (data as { lastUpdatedAt?: string }).lastUpdatedAt ??
+    createdAt;
 
   const stmt = db.prepare(`
-    INSERT INTO krishi_items (
+    INSERT INTO ${target} (
       pk, sk, entity_type, gsi1pk, gsi1sk, gsi2pk, gsi2sk, search_text, data, version, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(pk, sk) DO UPDATE SET
@@ -127,13 +256,23 @@ export function putSqliteItemIfAbsent<T extends object>(
   keys: SqliteKeyAttrs,
   data: T,
   version = 1,
+  table: SqliteTableName = 'krishi_flag_items',
 ): boolean {
+  const target = resolveSqliteTable(table);
   const now = new Date().toISOString();
-  const createdAt = keys.createdAt ?? (data as { createdAt?: string; timestamp?: string }).createdAt ?? (data as { timestamp?: string }).timestamp ?? now;
-  const updatedAt = keys.updatedAt ?? (data as { updatedAt?: string; lastUpdatedAt?: string }).updatedAt ?? (data as { lastUpdatedAt?: string }).lastUpdatedAt ?? createdAt;
+  const createdAt =
+    keys.createdAt ??
+    (data as { createdAt?: string; timestamp?: string }).createdAt ??
+    (data as { timestamp?: string }).timestamp ??
+    now;
+  const updatedAt =
+    keys.updatedAt ??
+    (data as { updatedAt?: string; lastUpdatedAt?: string }).updatedAt ??
+    (data as { lastUpdatedAt?: string }).lastUpdatedAt ??
+    createdAt;
 
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO krishi_items (
+    INSERT OR IGNORE INTO ${target} (
       pk, sk, entity_type, gsi1pk, gsi1sk, gsi2pk, gsi2sk, search_text, data, version, created_at, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
@@ -154,8 +293,14 @@ export function putSqliteItemIfAbsent<T extends object>(
   return Number(result.changes) > 0;
 }
 
-export function getSqliteItem<T>(db: DatabaseSync, pk: string, sk = 'META'): T | null {
-  const stmt = db.prepare('SELECT data FROM krishi_items WHERE pk = ? AND sk = ? LIMIT 1');
+export function getSqliteItem<T>(
+  db: DatabaseSync,
+  pk: string,
+  sk = 'META',
+  table: SqliteTableName = 'krishi_flag_items',
+): T | null {
+  const target = resolveSqliteTable(table);
+  const stmt = db.prepare(`SELECT data FROM ${target} WHERE pk = ? AND sk = ? LIMIT 1`);
   const row = stmt.get(pk, sk) as { data: string } | undefined;
   return row ? (JSON.parse(row.data) as T) : null;
 }
@@ -165,11 +310,13 @@ export function updateSqliteItem<T extends { version: number }>(
   keys: SqliteKeyAttrs,
   data: T,
   expectedVersion: number,
+  table: SqliteTableName = 'krishi_flag_items',
 ): void {
+  const target = resolveSqliteTable(table);
   const now = new Date().toISOString();
   const updatedAt = keys.updatedAt ?? (data as { updatedAt?: string }).updatedAt ?? now;
   const stmt = db.prepare(`
-    UPDATE krishi_items
+    UPDATE ${target}
     SET entity_type = ?,
         gsi1pk = ?,
         gsi1sk = ?,
@@ -200,18 +347,6 @@ export function updateSqliteItem<T extends { version: number }>(
   }
 }
 
-export function countSqliteEntities(db: DatabaseSync): Record<string, number> {
-  const rows = db.prepare('SELECT entity_type, COUNT(*) AS total FROM krishi_items GROUP BY entity_type').all() as Array<{
-    entity_type: string;
-    total: number;
-  }>;
-  const counts: Record<string, number> = {};
-  for (const row of rows) {
-    counts[row.entity_type] = Number(row.total);
-  }
-  return counts;
-}
-
 export function inspectSqliteDatabase(config: AppConfig, runIntegrity = false): SqliteInspection {
   const db = getSqliteDb(config.sqliteDbPath);
   const exists = fs.existsSync(config.sqliteDbPath);
@@ -222,9 +357,10 @@ export function inspectSqliteDatabase(config: AppConfig, runIntegrity = false): 
   }
 
   const journalRow = db.prepare('PRAGMA journal_mode;').get() as { journal_mode?: string } | undefined;
-  const countRow = db.prepare('SELECT COUNT(*) AS total FROM krishi_items').get() as { total: number } | undefined;
+  const usersRow = db.prepare('SELECT COUNT(*) AS total FROM krishi_users').get() as { total: number } | undefined;
+  const flagRow = db.prepare('SELECT COUNT(*) AS total FROM krishi_flag_items').get() as { total: number } | undefined;
   const idxRow = db
-    .prepare("SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'index' AND tbl_name = 'krishi_items'")
+    .prepare("SELECT COUNT(*) AS total FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('krishi_users', 'krishi_flag_items')")
     .get() as { total: number } | undefined;
 
   let integrityOk = true;
@@ -234,7 +370,9 @@ export function inspectSqliteDatabase(config: AppConfig, runIntegrity = false): 
   }
 
   const journalMode = (journalRow?.journal_mode ?? 'wal').toUpperCase();
-  const totalItems = Number(countRow?.total ?? 0);
+  const usersItems = Number(usersRow?.total ?? 0);
+  const flagItems = Number(flagRow?.total ?? 0);
+  const totalItems = usersItems + flagItems;
   const indexCount = Number(idxRow?.total ?? 0);
 
   return {
@@ -243,8 +381,11 @@ export function inspectSqliteDatabase(config: AppConfig, runIntegrity = false): 
     journalMode,
     integrityOk,
     fileSizeBytes,
+    usersItems,
+    flagItems,
     totalItems,
     indexCount,
-    message: `Persistent SQLite single-table active (${journalMode} mode, ${totalItems} indexed items, ${(fileSizeBytes / 1024).toFixed(1)} KB).`,
+    tables: ['krishi_users', 'krishi_flag_items'],
+    message: `Persistent SQLite 2-table store active (${journalMode} mode, ${usersItems} user login items + ${flagItems} flag/domain items, ${(fileSizeBytes / 1024).toFixed(1)} KB).`,
   };
 }

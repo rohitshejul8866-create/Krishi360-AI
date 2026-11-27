@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Bell, Database, Globe2, Settings2 } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
@@ -14,10 +14,24 @@ export function SettingsPage() {
   const [language, setLanguage] = useState(settings.language)
   const [notificationsEnabled, setNotificationsEnabled] = useState(settings.notificationsEnabled)
   const [compactTables, setCompactTables] = useState(settings.compactTables)
+  const [saving, setSaving] = useState(false)
 
-  const save = () => {
-    updateSettings({ language, notificationsEnabled, compactTables })
-    show('Settings saved', 'Preferences updated for this session.', 'success')
+  useEffect(() => {
+    setLanguage(settings.language)
+    setNotificationsEnabled(settings.notificationsEnabled)
+    setCompactTables(settings.compactTables)
+  }, [settings.language, settings.notificationsEnabled, settings.compactTables])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await updateSettings({ language, notificationsEnabled, compactTables })
+      show('Settings saved', 'Preferences saved to your account database.', 'success')
+    } catch (err) {
+      show('Unable to save settings', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -39,7 +53,7 @@ export function SettingsPage() {
             <ToggleRow icon={<Database size={17} />} label="Compact tables" description="Use denser rows in data-heavy screens." checked={compactTables} onChange={setCompactTables} />
           </div>
           <div className="mt-6 flex justify-end">
-            <Button onClick={save}>Save preferences</Button>
+            <Button onClick={() => void save()} disabled={saving}>{saving ? 'Saving…' : 'Save preferences'}</Button>
           </div>
         </Card>
 

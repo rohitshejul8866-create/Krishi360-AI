@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { BellPlus, Calculator, IndianRupee, MapPin, Store, Trash2, TrendingUp } from 'lucide-react'
+import { BellPlus, Calculator, ExternalLink, IndianRupee, MapPin, Store, Trash2, TrendingUp } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
 import { DemoNote } from '../../components/common/DemoNote'
 import { FilterBar } from '../../components/common/FilterBar'
@@ -12,6 +12,7 @@ import { DataTable } from '../../components/ui/Table'
 import type { Column } from '../../components/ui/Table'
 import { TrendChart } from '../../components/charts/TrendChart'
 import { StatCard } from '../../components/common/StatCard'
+import { KrishiFarmMap } from '../../components/maps/KrishiFarmMap'
 import { useApp } from '../../services/store'
 import { useToast } from '../../context/ToastContext'
 import { mandiService } from '../../services/mandiService'
@@ -32,6 +33,11 @@ export function MandiSmartPage() {
   const [alertCrop, setAlertCrop] = useState('Tomato')
   const [alertDistrict, setAlertDistrict] = useState('Nashik')
   const [targetPrice, setTargetPrice] = useState(1900)
+  const [savingAlert, setSavingAlert] = useState(false)
+  const [mandiSearchNonce, setMandiSearchNonce] = useState(0)
+  const [foundPlaces, setFoundPlaces] = useState<Array<{ id: string; displayName: string; formattedAddress: string; googleMapsURI?: string }>>([])
+
+  const mandiSearchQuery = `APMC agricultural mandi market ${district !== 'All districts' ? district : ''} ${state !== 'All states' ? state : 'Maharashtra, India'}`.trim()
 
   const stateOptions = useMemo(() => Array.from(new Set(mandiPrices.map((row) => row.state))).sort(), [mandiPrices])
   const districtOptions = useMemo(() => Array.from(new Set(mandiPrices.map((row) => row.district))).sort(), [mandiPrices])
@@ -53,11 +59,30 @@ export function MandiSmartPage() {
     { key: 'date', label: 'Date', render: (row) => <span className="text-xs text-muted">{formatDate(row.date)}</span> },
   ]
 
-  const createAlert = () => {
-    if (targetPrice <= 0) return show('Invalid target', 'Enter a positive target price.', 'warning')
-    addMandiAlert({ crop: alertCrop, district: alertDistrict, targetPrice })
-    setAlertOpen(false)
-    show('Price alert created', `Demo alert for ${alertCrop} in ${alertDistrict}.`, 'success')
+  const createAlert = async () => {
+    if (!Number.isFinite(targetPrice) || targetPrice <= 0) {
+      show('Invalid target', 'Enter a positive target price.', 'warning')
+      return
+    }
+    setSavingAlert(true)
+    try {
+      await addMandiAlert({ crop: alertCrop, district: alertDistrict, targetPrice })
+      setAlertOpen(false)
+      show('Price alert created', `Alert for ${alertCrop} in ${alertDistrict} saved to database.`, 'success')
+    } catch (err) {
+      show('Unable to create alert', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    } finally {
+      setSavingAlert(false)
+    }
+  }
+
+  const deleteAlert = async (id: string) => {
+    try {
+      await removeMandiAlert(id)
+      show('Alert removed', 'Price alert deleted from database.', 'info')
+    } catch (err) {
+      show('Unable to remove alert', err instanceof Error ? err.message : 'Backend error.', 'critical')
+    }
   }
 
   const reset = () => {
@@ -133,6 +158,47 @@ export function MandiSmartPage() {
       </div>
 
       <Card className="mt-6">
+        <CardHeader
+          title="Google Maps Mandi Finder"
+          description="Discover verified APMC agricultural markets near your selected state or district using Google Maps Places."
+          icon={<MapPin size={18} />}
+          action={
+            <Button variant="outline" onClick={() => setMandiSearchNonce((n) => n + 1)}>
+              <MapPin size={14} /> Locate Mandis in {district !== 'All districts' ? district : state !== 'All states' ? state : 'India'}
+            </Button>
+          }
+        />
+        <KrishiFarmMap
+          markers={[]}
+          enablePlaceSearch
+          defaultSearchQuery={mandiSearchQuery}
+          autoSearchNonce={mandiSearchNonce}
+          searchPlaceholder="Search APMC Mandi or wholesale market in India…"
+          onPlacesFound={(places) => setFoundPlaces(places)}
+        />
+        {foundPlaces.length > 0 ? (
+          <div className="mt-4 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {foundPlaces.map((place) => (
+              <div key={place.id} className="rounded-xl border border-line/70 bg-white/70 p-3 text-xs">
+                <p className="font-bold text-ink">{place.displayName}</p>
+                <p className="mt-0.5 text-[11px] text-muted">{place.formattedAddress}</p>
+                {place.googleMapsURI ? (
+                  <a
+                    href={place.googleMapsURI}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-1.5 inline-flex items-center gap-1 text-[11px] font-bold text-forest hover:underline"
+                  >
+                    Directions on Google Maps <ExternalLink size={11} />
+                  </a>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </Card>
+
+      <Card className="mt-6">
         <CardHeader title="Price alerts" description="Demo notifications you create from this screen." icon={<BellPlus size={18} />} />
         <div className="space-y-2">
           {mandiAlerts.map((alert) => (
@@ -144,7 +210,7 @@ export function MandiSmartPage() {
                   <p className="text-[11px] text-muted">Target {formatINR(alert.targetPrice)} · created {formatDate(alert.createdAt)}</p>
                 </div>
               </div>
-              <button type="button" onClick={() => { removeMandiAlert(alert.id); show('Alert removed', 'Demo price alert deleted.', 'info') }} className="flex size-9 items-center justify-center rounded-xl text-muted hover:bg-[#FBE7E3] hover:text-alert" aria-label="Remove alert"><Trash2 size={15} /></button>
+              <button type="button" onClick={() => void deleteAlert(alert.id)} className="flex size-9 items-center justify-center rounded-xl text-muted hover:bg-[#FBE7E3] hover:text-alert" aria-label="Remove alert"><Trash2 size={15} /></button>
             </div>
           ))}
           {mandiAlerts.length === 0 ? <p className="py-8 text-center text-sm text-muted">No price alerts yet.</p> : null}
@@ -164,7 +230,7 @@ export function MandiSmartPage() {
           </Field>
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setAlertOpen(false)}>Cancel</Button>
-            <Button onClick={createAlert}>Create alert</Button>
+            <Button onClick={() => void createAlert()} disabled={savingAlert}>{savingAlert ? 'Saving…' : 'Create alert'}</Button>
           </div>
         </div>
       </Modal>

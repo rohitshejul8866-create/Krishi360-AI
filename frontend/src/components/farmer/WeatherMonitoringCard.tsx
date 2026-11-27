@@ -17,7 +17,8 @@ import {
 } from 'lucide-react'
 import { Card, CardHeader } from '../ui/Card'
 import { Badge } from '../ui/Badge'
-import { DEMO_FARM } from '../../data/farmers'
+import { useAuth } from '../../context/AuthContext'
+import { useApp } from '../../services/store'
 import { DEMO_WEATHER } from '../../data/irrigation'
 
 interface WeatherData {
@@ -54,6 +55,11 @@ function getWeatherDetails(code: number): { text: string; icon: any } {
 }
 
 export function WeatherMonitoringCard() {
+  const { user } = useAuth()
+  const { farms } = useApp()
+  const activeFarm = farms[0]
+  const displayFarmName = activeFarm?.name ?? (user?.name ? `${user.name.split(' ')[0]}'s Farm` : 'Your Farm')
+  const displayLocation = activeFarm?.location ?? user?.location ?? 'India'
   const [weather, setWeather] = useState<WeatherData | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<string>('')
@@ -153,7 +159,7 @@ export function WeatherMonitoringCard() {
     } else if (weather.humidity > 80) {
       advisory = 'High atmospheric humidity (>80%). Monitor crops closely for fungal indicators or blight symptoms.'
     } else if (weather.temp > 35) {
-      advisory = 'High daytime temperature. Ensure adequate moisture in drip-irrigated plots (Plots A & C).'
+      advisory = 'High daytime temperature. Ensure adequate moisture in your drip-irrigated plots.'
     } else if (weather.windSpeed > 20) {
       advisory = 'Strong wind gusts detected. Avoid pesticide spraying until winds subside.'
     }
@@ -163,7 +169,7 @@ export function WeatherMonitoringCard() {
     <Card className="overflow-hidden border-sage/40 bg-gradient-to-br from-white via-soft-sage/20 to-white shadow-lg">
       <CardHeader
         title="Real-Time Farm Weather Intelligence"
-        description={`Live meteorological telemetry for ${DEMO_FARM.name} (${DEMO_FARM.location})`}
+        description={`Live meteorological telemetry for ${displayFarmName} (${displayLocation})`}
         icon={<Sun className="text-amber-600 animate-pulse" size={20} />}
         action={
           <div className="flex items-center gap-2">
@@ -195,7 +201,7 @@ export function WeatherMonitoringCard() {
 
       {loading && !weather ? (
         <div className="flex h-48 items-center justify-center p-6 text-xs text-muted">
-          <RefreshCw className="mr-2 animate-spin text-forest" size={16} /> Fetching live meteorological data for Nashik...
+          <RefreshCw className="mr-2 animate-spin text-forest" size={16} /> Fetching live meteorological data for {displayLocation}...
         </div>
       ) : weather ? (
         <div className="p-6 pt-2 space-y-6">
@@ -215,7 +221,7 @@ export function WeatherMonitoringCard() {
                   <span className="text-xs text-white/80">Feels like {weather.feelsLike}°C</span>
                 </div>
                 <p className="mt-2 text-xs text-sage/90 flex items-center gap-1">
-                  <MapPin size={13} /> {DEMO_FARM.location} (19.99° N, 73.79° E)
+                  <MapPin size={13} /> {displayLocation}
                 </p>
               </div>
             </div>
