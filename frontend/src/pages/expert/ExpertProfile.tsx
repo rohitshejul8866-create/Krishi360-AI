@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Award, Building2, MapPin, UserRound } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
+import { UserAvatar } from '../../components/common/UserAvatar'
 import { Card, CardHeader } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -51,7 +52,11 @@ export function ExpertProfile() {
       <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <Card>
           <div className="flex flex-col items-center text-center">
-            <span className="flex size-24 items-center justify-center rounded-[28px] bg-linear-to-br from-sage to-forest text-2xl font-extrabold text-white">{user.avatar}</span>
+            <UserAvatar
+              avatar={user.avatar}
+              name={user.name}
+              className="size-24 rounded-[28px] bg-linear-to-br from-sage to-forest text-2xl font-extrabold text-white"
+            />
             <h2 className="mt-5 text-xl font-extrabold text-ink">{user.name}</h2>
             <p className="mt-1 text-sm text-muted">{user.email}</p>
             <div className="mt-4 flex flex-wrap justify-center gap-2">

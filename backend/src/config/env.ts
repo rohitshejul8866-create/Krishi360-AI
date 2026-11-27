@@ -103,7 +103,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     rawSqlitePath === ':memory:'
       ? ':memory:'
       : path.resolve(process.cwd(), rawSqlitePath || '.data/krishi360.db');
-  const awsRegion = env.AWS_REGION || env.AWS_DEFAULT_REGION || 'ap-south-1';
+  const awsRegion = env.AWS_REGION?.trim() || env.AWS_DEFAULT_REGION?.trim() || 'ap-south-1';
   const dynamoEndpoint = optionalHttpUrl(env.DYNAMODB_ENDPOINT, 'DYNAMODB_ENDPOINT');
   const awsCredentialsConfigured =
     isLambda ||

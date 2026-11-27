@@ -2,7 +2,7 @@ import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
 import { randomUUID } from 'node:crypto';
 import type { AppConfig } from '../config/env';
 import type { OperationHandler, RequestContext } from '../types/api';
-import { AppError, UnauthorizedError, ValidationError } from '../utils/errors';
+import { AppError, ServiceUnavailableError, UnauthorizedError, ValidationError } from '../utils/errors';
 import { createLogger } from '../utils/logger';
 import { corsHeaders, errorResponse, successResponse } from '../utils/response';
 import { requireRole, resolveUser, type Role } from './auth';
@@ -94,8 +94,32 @@ export function withHttp<TBody = unknown, TQuery = unknown, TParams = unknown>(
         origin,
       });
     } catch (err) {
-      if (err instanceof AppError) {
-        logger.warn('request.failed', { code: err.code, status: err.statusCode, durationMs: Date.now() - started });
+      const errName = err instanceof Error ? err.name : '';
+      let mappedErr: unknown = err;
+      if (
+        !(err instanceof AppError) &&
+        (errName === 'InvalidSignatureException' ||
+          errName === 'SignatureDoesNotMatch' ||
+          errName === 'UnrecognizedClientException' ||
+          errName === 'CredentialsProviderError')
+      ) {
+        mappedErr = new ServiceUnavailableError(
+          'AWS_CREDENTIALS_INVALID',
+          'AWS DynamoDB rejected the configured credentials. Verify AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in Settings → Secrets.',
+        );
+      } else if (!(err instanceof AppError) && errName === 'AccessDeniedException') {
+        mappedErr = new ServiceUnavailableError(
+          'AWS_ACCESS_DENIED',
+          'Configured AWS IAM principal lacks permission for this DynamoDB/S3 operation.',
+        );
+      }
+
+      if (mappedErr instanceof AppError) {
+        logger.warn('request.failed', {
+          code: mappedErr.code,
+          status: mappedErr.statusCode,
+          durationMs: Date.now() - started,
+        });
       } else {
         // Full detail stays in CloudWatch; the client gets a safe message.
         logger.error('request.error', {
@@ -104,7 +128,7 @@ export function withHttp<TBody = unknown, TQuery = unknown, TParams = unknown>(
           errorMessage: err instanceof Error ? err.message : String(err),
         });
       }
-      return errorResponse(err, { requestId, config, origin });
+      return errorResponse(mappedErr, { requestId, config, origin });
     }
   };
 }

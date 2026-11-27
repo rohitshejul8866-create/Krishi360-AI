@@ -21,6 +21,7 @@ import type { Role } from '../../types'
 import { PageTransition } from '../animations/PageTransition'
 import { Badge } from '../ui/Badge'
 import { Brand } from '../common/Brand'
+import { UserAvatar } from '../common/UserAvatar'
 import { Modal } from '../ui/Modal'
 
 export interface PortalNavItem {
@@ -319,9 +320,11 @@ export function PortalShell({ role, portalName, navItems }: PortalShellProps) {
                 aria-expanded={profileOpen}
                 className="flex items-center gap-2 rounded-2xl bg-forest py-1.5 pr-2.5 pl-1.5 text-white"
               >
-                <span className="flex size-7 items-center justify-center rounded-xl bg-white/15 text-[10px] font-extrabold">
-                  {user?.avatar ?? 'U'}
-                </span>
+                <UserAvatar
+                  avatar={user?.avatar}
+                  name={user?.name}
+                  className="size-7 rounded-xl bg-white/15 text-[10px] font-extrabold"
+                />
                 <span className="hidden text-xs font-bold sm:block">{user?.name.split(' ')[0]}</span>
                 <ChevronDown size={13} />
               </button>

@@ -1,5 +1,6 @@
 import { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
 import { S3Client } from '@aws-sdk/client-s3';
+import { buildAwsSdkOptions } from '../../config/awsClient';
 import type { AppConfig } from '../../config/env';
 import { ServiceUnavailableError } from '../../utils/errors';
 import { BedrockAnalysisService } from './bedrock';
@@ -26,9 +27,10 @@ export function createAiService(config: AppConfig, s3?: S3Client): AiAnalysisSer
     case 'bedrock': {
       const bearerToken =
         process.env.AWS_BEARER_TOKEN_BEDROCK?.trim() || process.env.AWS_BEARER_TOKEN?.trim();
+      const awsOpts = buildAwsSdkOptions(config);
       return new BedrockAnalysisService({
         bedrock: new BedrockRuntimeClient({
-          region: config.awsRegion,
+          ...awsOpts,
           ...(bearerToken
             ? {
                 token: async () => ({ token: bearerToken }),
@@ -36,7 +38,7 @@ export function createAiService(config: AppConfig, s3?: S3Client): AiAnalysisSer
               }
             : {}),
         }),
-        s3: s3 ?? new S3Client({ region: config.awsRegion }),
+        s3: s3 ?? new S3Client(awsOpts),
         bucket: config.uploadBucketName,
         modelId: config.bedrockModelId,
       });

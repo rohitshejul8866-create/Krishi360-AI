@@ -5,6 +5,7 @@ import {
   waitUntilTableExists,
 } from '@aws-sdk/client-dynamodb';
 import { HeadBucketCommand, S3Client } from '@aws-sdk/client-s3';
+import { buildAwsSdkOptions } from '../config/awsClient';
 import type { AppConfig } from '../config/env';
 import type { Container, Repositories } from '../container';
 import type { AuthUser } from '../middleware/auth';
@@ -131,6 +132,9 @@ function sanitizeAwsFailure(err: unknown): string {
   if (name === 'CredentialsProviderError' || name === 'UnrecognizedClientException') {
     return 'AWS credentials are missing or invalid in server environment Secrets.';
   }
+  if (name === 'InvalidSignatureException' || name === 'SignatureDoesNotMatch') {
+    return 'AWS signature mismatch (InvalidSignatureException). Check that AWS_SECRET_ACCESS_KEY in Secrets matches AWS_ACCESS_KEY_ID without extra characters, and remove any stale AWS_SESSION_TOKEN if using an AKIA key.';
+  }
   if (name === 'AccessDeniedException') {
     return 'Configured AWS IAM principal lacks DynamoDB DescribeTable/CreateTable permissions.';
   }
@@ -161,7 +165,7 @@ export async function inspectS3Bucket(config: AppConfig): Promise<S3BucketInspec
     };
   }
   try {
-    const s3 = new S3Client({ region: config.awsRegion });
+    const s3 = new S3Client(buildAwsSdkOptions(config));
     await s3.send(new HeadBucketCommand({ Bucket: bucketName }));
     return {
       configured: true,

@@ -1,6 +1,7 @@
 import { S3Client } from '@aws-sdk/client-s3';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import { randomUUID } from 'node:crypto';
+import { buildAwsSdkOptions } from '../config/awsClient';
 import type { AppConfig } from '../config/env';
 import type { CropCase } from '../models/cropCase';
 import { PayloadTooLargeError, ServiceUnavailableError, UnsupportedMediaTypeError, ValidationError } from '../utils/errors';
@@ -43,7 +44,7 @@ export class UploadService {
         'Image uploads are not configured. Set UPLOAD_BUCKET_NAME and deploy the S3 bucket first.',
       );
     }
-    return this.s3 ?? new S3Client({ region: this.config.awsRegion });
+    return this.s3 ?? new S3Client(buildAwsSdkOptions(this.config));
   }
 
   validate(request: UploadRequest): void {

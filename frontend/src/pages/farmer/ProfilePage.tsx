@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Camera, MapPin, ShieldCheck, UserRound } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
+import { UserAvatar } from '../../components/common/UserAvatar'
 import { Card, CardHeader } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -48,9 +49,11 @@ export function ProfilePage() {
         <Card>
           <div className="flex flex-col items-center text-center">
             <div className="relative">
-              <span className="flex size-24 items-center justify-center rounded-[28px] bg-linear-to-br from-sage to-forest text-2xl font-extrabold text-white shadow-[0_18px_36px_-18px_rgba(52,75,53,0.9)]">
-                {user.avatar}
-              </span>
+              <UserAvatar
+                avatar={user.avatar}
+                name={user.name}
+                className="size-24 rounded-[28px] bg-linear-to-br from-sage to-forest text-2xl font-extrabold text-white shadow-[0_18px_36px_-18px_rgba(52,75,53,0.9)]"
+              />
               <button type="button" onClick={() => show('Avatar upload (demo)', 'Profile images are not uploaded in this frontend build.', 'info')} className="absolute -right-2 -bottom-2 flex size-9 items-center justify-center rounded-full border-2 border-white bg-forest text-white" aria-label="Change avatar">
                 <Camera size={15} />
               </button>

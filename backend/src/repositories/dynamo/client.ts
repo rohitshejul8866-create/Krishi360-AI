@@ -1,5 +1,6 @@
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { buildAwsSdkOptions } from '../../config/awsClient';
 import type { AppConfig } from '../../config/env';
 
 let baseClient: DynamoDBClient | undefined;
@@ -8,7 +9,7 @@ let docClient: DynamoDBDocumentClient | undefined;
 export function getBaseDynamoClient(config: AppConfig): DynamoDBClient {
   if (!baseClient) {
     baseClient = new DynamoDBClient({
-      region: config.awsRegion,
+      ...buildAwsSdkOptions(config),
       ...(config.dynamoEndpoint ? { endpoint: config.dynamoEndpoint } : {}),
     });
   }
