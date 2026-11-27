@@ -10,7 +10,7 @@ ARG VITE_API_BASE_URL="/api"
 ENV VITE_GOOGLE_MAPS_API_KEY=$VITE_GOOGLE_MAPS_API_KEY
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 
-RUN npm run build && npm run build:server
+RUN npm run build
 
 FROM node:22-slim AS runner
 WORKDIR /app
@@ -18,7 +18,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV AUTH_MODE=session
-ENV DATA_BACKEND=dynamodb
 ENV AWS_REGION=ap-south-1
 
 COPY package.json ./

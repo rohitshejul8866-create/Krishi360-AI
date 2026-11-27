@@ -4,10 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "dev": "tsx server.app.ts",
     "start": "node server.ts",
-    "build": "vite build --config frontend/vite.config.ts",
-    "build:server": "esbuild server.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist-server/server.mjs",
+    "build": "vite build --config frontend/vite.config.ts && npm run build:server",
+    "build:server": "esbuild server.app.ts --bundle --platform=node --target=node22 --format=esm --packages=external --outfile=dist-server/server.mjs",
     "start:prod": "NODE_ENV=production node dist-server/server.mjs",
     "preview": "vite preview",
     "clean": "rm -rf dist dist-server server.js",
